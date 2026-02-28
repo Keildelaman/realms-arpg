@@ -64,6 +64,8 @@ export type MonsterAIState =
 
 export type Direction = 'up' | 'down' | 'left' | 'right';
 
+export type AttackPhase = 'none' | 'windup' | 'swing' | 'followthrough';
+
 // --- Data Definitions (static, read-only from data files) ---
 
 export interface SkillLevelData {
@@ -271,6 +273,15 @@ export interface PlayerState {
   y: number;
   facingAngle: number; // radians, 0 = right
 
+  // Velocity (acceleration model)
+  velocityX: number;
+  velocityY: number;
+
+  // Attack animation phases
+  attackPhase: AttackPhase;
+  attackPhaseTimer: number;
+  attackAngle: number;
+
   // Combat state
   isAttacking: boolean;
   isDashing: boolean;
@@ -460,6 +471,9 @@ export type GameEventMap = {
   'player:xpGained': { amount: number; source: string };
   'player:statsChanged': undefined;
   'player:moved': { x: number; y: number };
+  'player:velocityChanged': { vx: number; vy: number; speed: number };
+  'player:startedMoving': undefined;
+  'player:stoppedMoving': undefined;
 
   // Combat events
   'combat:playerAttack': { angle: number; skillId?: string };
@@ -473,6 +487,28 @@ export type GameEventMap = {
   };
   'combat:monsterAttack': { monsterId: string; damage: number };
   'combat:miss': { targetId: string; x: number; y: number };
+  'combat:attackWindup': { angle: number; duration: number };
+  'combat:attackSwing': { angle: number; duration: number };
+  'combat:attackFollowThrough': { angle: number; duration: number };
+  'combat:attackComplete': undefined;
+  'combat:attackReady': undefined;
+  'combat:impact': {
+    x: number;
+    y: number;
+    angle: number;
+    damage: number;
+    isCrit: boolean;
+    damageType: DamageType;
+    targetId: string;
+  };
+  'combat:knockback': {
+    targetId: string;
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+    duration: number;
+  };
 
   // Monster events
   'monster:spawned': { monster: MonsterInstance };

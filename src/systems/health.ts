@@ -33,19 +33,19 @@ function onPlayerDamaged(data: { amount: number; source: string }): void {
 }
 
 function onPlayerHealed(data: { amount: number; source: string }): void {
-  const player = getPlayer();
-  const actualHeal = healPlayer(data.amount);
+  // Healing is already applied by the emitter.
+  // This handler only drives heal feedback.
+  if (data.amount <= 0) return;
 
-  if (actualHeal > 0) {
-    emit('ui:damageNumber', {
-      x: player.x,
-      y: player.y,
-      amount: actualHeal,
-      isCrit: false,
-      damageType: 'physical',
-      isHeal: true,
-    });
-  }
+  const player = getPlayer();
+  emit('ui:damageNumber', {
+    x: player.x,
+    y: player.y,
+    amount: data.amount,
+    isCrit: false,
+    damageType: 'physical',
+    isHeal: true,
+  });
 }
 
 function onStatsChanged(): void {

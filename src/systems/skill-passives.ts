@@ -226,16 +226,7 @@ function activateVampiricStrikes(passiveId: string): void {
     const actualHeal = healPlayer(healAmount);
 
     if (actualHeal > 0) {
-      const player = getPlayer();
       emit('player:healed', { amount: actualHeal, source: 'vampiric_strikes' });
-      emit('ui:damageNumber', {
-        x: player.x,
-        y: player.y - 20,
-        amount: actualHeal,
-        isCrit: false,
-        damageType: 'physical',
-        isHeal: true,
-      });
     }
   };
 
@@ -454,26 +445,15 @@ function updateBerserker(passiveId: string): void {
 // --------------------------------------------------------------------------
 // 7. Efficient Casting — All skill energy costs reduced by 8-20%.
 // --------------------------------------------------------------------------
-// This passive doesn't hook events — it works by modifying the energy cost
-// calculation. We apply a persistent modifier tracked in passive state.
+// No direct event wiring needed here.
+// Energy-cost reduction is computed in the skills system based on whether
+// this passive is equipped and its current effective level.
 
-let efficientCastingReduction = 0;
-
-function activateEfficientCasting(passiveId: string): void {
-  efficientCastingReduction = scaleValue(0.08, 0.20, passiveId);
+function activateEfficientCasting(_passiveId: string): void {
 }
 
 function deactivateEfficientCasting(passiveId: string): void {
-  efficientCastingReduction = 0;
   unregisterHandlers(passiveId);
-}
-
-/**
- * Called by the skills system to get the energy cost reduction multiplier.
- * Returns a value like 0.92 (8% reduction) to 0.80 (20% reduction).
- */
-export function getEnergyCostMultiplier(): number {
-  return 1.0 - efficientCastingReduction;
 }
 
 // --------------------------------------------------------------------------
@@ -717,7 +697,6 @@ export function init(): void {
   berserkerActive = false;
   berserkerDamageBonus = 0;
   berserkerCritBonus = 0;
-  efficientCastingReduction = 0;
   focusedMindTimeSinceLastAttack = 0;
   focusedMindActive = false;
 

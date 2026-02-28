@@ -8,6 +8,8 @@ import {
   DASH_SPEED,
   DASH_DURATION,
   DASH_COOLDOWN,
+  MOVE_ACCELERATION,
+  MOVE_DECELERATION,
 } from '@/data/constants';
 
 // --- Input state ---
@@ -32,6 +34,21 @@ let mouseWorldX = 0;
 let mouseWorldY = 0;
 let mousePressed = false;
 let mouseJustPressed = false;
+
+// --- Velocity state (acceleration model) ---
+
+let currentVx = 0;
+let currentVy = 0;
+let wasMoving = false;
+
+/** Linearly approach target by maxDelta per step. */
+function approach(current: number, target: number, maxDelta: number): number {
+  if (current < target) {
+    return Math.min(current + maxDelta, target);
+  } else {
+    return Math.max(current - maxDelta, target);
+  }
+}
 
 // --- Dash state ---
 
@@ -125,10 +142,13 @@ function endDash(): void {
   isDashing = false;
   const player = getPlayer();
   player.isDashing = false;
-  // Invulnerability from dash ends with the dash (iframe = dash duration)
-  // Only clear invulnerability if it was from the dash (not from a hit)
-  // We track this by checking if the iframe timer matches dash timing
   player.isInvulnerable = false;
+
+  // Reset velocity so player doesn't slide after dashing
+  currentVx = 0;
+  currentVy = 0;
+  player.velocityX = 0;
+  player.velocityY = 0;
 }
 
 // --- Lifecycle ---
@@ -149,6 +169,11 @@ export function init(): void {
   dashCooldownTimer = 0;
   dashDirectionX = 0;
   dashDirectionY = 0;
+
+  // Reset velocity state
+  currentVx = 0;
+  currentVy = 0;
+  wasMoving = false;
 }
 
 export function update(dt: number): void {
@@ -196,7 +221,7 @@ export function update(dt: number): void {
     }
   }
 
-  // --- Normal movement ---
+  // --- Normal movement (acceleration model) ---
   let dx = 0;
   let dy = 0;
 
@@ -205,6 +230,12 @@ export function update(dt: number): void {
   if (keys.up) dy -= 1;
   if (keys.down) dy += 1;
 
+  // Attack commitment: zero input during swing phase
+  if (player.attackPhase === 'swing') {
+    dx = 0;
+    dy = 0;
+  }
+
   // Normalize diagonal movement
   if (dx !== 0 && dy !== 0) {
     const diag = Math.SQRT1_2; // 1/sqrt(2)
@@ -212,17 +243,45 @@ export function update(dt: number): void {
     dy *= diag;
   }
 
-  // Apply movement speed (base speed is read from player state, already buffed)
+  // Compute target velocity
   const speed = player.moveSpeed;
-  player.x += dx * speed * dt;
-  player.y += dy * speed * dt;
+  const targetVx = dx * speed;
+  const targetVy = dy * speed;
+
+  // Determine acceleration rate: accelerate when input held, decelerate when released
+  const hasInput = dx !== 0 || dy !== 0;
+  const accel = hasInput ? MOVE_ACCELERATION : MOVE_DECELERATION;
+
+  // Approach target velocity
+  currentVx = approach(currentVx, targetVx, accel * dt);
+  currentVy = approach(currentVy, targetVy, accel * dt);
+
+  // Apply velocity to position
+  player.x += currentVx * dt;
+  player.y += currentVy * dt;
+
+  // Write velocity to state for visual layer
+  player.velocityX = currentVx;
+  player.velocityY = currentVy;
 
   // Update facing angle — player always faces the cursor
   player.facingAngle = getPlayerFacingAngle();
 
-  // Emit movement event
-  if (dx !== 0 || dy !== 0) {
+  // Detect movement start/stop transitions and emit events
+  const currentSpeed = Math.sqrt(currentVx * currentVx + currentVy * currentVy);
+  const isMoving = currentSpeed > 5; // small threshold to avoid jitter
+
+  if (isMoving && !wasMoving) {
+    emit('player:startedMoving');
+  } else if (!isMoving && wasMoving) {
+    emit('player:stoppedMoving');
+  }
+  wasMoving = isMoving;
+
+  // Emit velocity and position events
+  if (isMoving) {
     emit('player:moved', { x: player.x, y: player.y });
+    emit('player:velocityChanged', { vx: currentVx, vy: currentVy, speed: currentSpeed });
   }
 
   // --- Mouse click → attack ---

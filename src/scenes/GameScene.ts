@@ -29,6 +29,7 @@ import * as zones from '@/systems/zones';
 import { PlayerEntity } from '@/entities/PlayerEntity';
 import { MonsterEntity } from '@/entities/MonsterEntity';
 import { Projectile } from '@/entities/Projectile';
+import { VFXManager } from '@/entities/VFXManager';
 
 // UI (damage numbers rendered in world space)
 import { DamageNumberManager } from '@/ui/DamageNumber';
@@ -41,6 +42,7 @@ export class GameScene extends Phaser.Scene {
   private lootSprites: Map<string, Phaser.GameObjects.Sprite> = new Map();
   private damageNumbers!: DamageNumberManager;
   private statusIcons!: StatusIcons;
+  private vfxManager!: VFXManager;
 
   // Input
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -104,6 +106,9 @@ export class GameScene extends Phaser.Scene {
     // --- World-space UI ---
     this.damageNumbers = new DamageNumberManager(this);
     this.statusIcons = new StatusIcons(this);
+
+    // --- VFX Manager ---
+    this.vfxManager = new VFXManager(this);
 
     // --- Input ---
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -426,5 +431,10 @@ export class GameScene extends Phaser.Scene {
       sprite.destroy();
     }
     this.lootSprites.clear();
+
+    if (this.vfxManager) {
+      this.vfxManager.destroy();
+      this.vfxManager = new VFXManager(this);
+    }
   }
 }

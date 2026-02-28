@@ -145,13 +145,6 @@ function onMonsterDied(data: {
   // Track kills
   const player = getPlayer();
   player.monstersKilled += 1;
-
-  // Track boss kills
-  if (data.isBoss) {
-    if (!player.bossesKilled.includes(data.monsterId)) {
-      player.bossesKilled.push(data.monsterId);
-    }
-  }
 }
 
 // --- Lifecycle ---

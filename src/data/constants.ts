@@ -161,6 +161,58 @@ export const FREEZE_REAPPLY_COOLDOWN = 5.0;
 // --- Zones ---
 export const ZONE_TRANSITION_DISTANCE = 60; // pixels from edge to trigger transition
 
+// --- Player Visual ---
+export const PLAYER_BODY_RADIUS = 14;
+export const PLAYER_DIRECTION_WEDGE_ANGLE = 50; // degrees
+export const PLAYER_IDLE_PULSE_MIN = 0.96;
+export const PLAYER_IDLE_PULSE_MAX = 1.04;
+export const PLAYER_IDLE_PULSE_SPEED = 1.8; // Hz
+
+// --- Movement Feel ---
+export const MOVE_ACCELERATION = 1400;    // px/s²
+export const MOVE_DECELERATION = 2200;    // px/s² — snappier stop
+export const MOVE_STRETCH_FACTOR = 0.08;
+export const MOVE_LEAN_ANGLE = 6;         // degrees (unused for now)
+export const MOVE_TRAIL_SPEED_THRESHOLD = 120; // px/s before dust spawns
+export const MOVE_TRAIL_FREQUENCY = 0.04; // seconds between dust particles
+export const MOVE_SQUASH_ON_STOP = 0.06;
+export const MOVE_SQUASH_DURATION = 0.1;  // seconds
+
+// --- Attack Animation ---
+export const ATTACK_WINDUP_DURATION = 0.065;       // seconds
+export const ATTACK_SWING_DURATION = 0.08;          // seconds
+export const ATTACK_FOLLOW_THROUGH_DURATION = 0.12; // seconds
+export const ATTACK_PULLBACK_DISTANCE = 4;          // pixels
+export const ATTACK_LUNGE_DISTANCE = 10;            // pixels
+export const ATTACK_ARC_FILL_ALPHA = 0.35;
+export const ATTACK_ARC_THICKNESS = 8;
+export const ATTACK_ARC_INNER_RATIO = 0.45;
+export const ATTACK_ARC_FADE_DURATION = 180;        // ms
+
+// --- Hit Impact ---
+export const HIT_STOP_BASE = 0.05;            // seconds
+export const HIT_STOP_CRIT_BONUS = 0.03;      // seconds added on crit
+export const HIT_STOP_DAMAGE_SCALE = 0.0005;  // seconds per damage point
+export const HIT_STOP_MAX = 0.12;             // seconds cap
+export const SCREEN_SHAKE_HIT_DURATION = 80;   // ms
+export const SCREEN_SHAKE_HIT_INTENSITY = 0.003;
+export const SCREEN_SHAKE_CRIT_DURATION = 120; // ms
+export const SCREEN_SHAKE_CRIT_INTENSITY = 0.006;
+export const IMPACT_PARTICLE_COUNT = 6;
+export const IMPACT_PARTICLE_CRIT_COUNT = 12;
+export const IMPACT_PARTICLE_SPEED = 200;      // px/s
+export const IMPACT_PARTICLE_LIFESPAN = 350;   // ms
+export const IMPACT_PARTICLE_SIZE = 3;         // radius
+
+// --- Knockback (upgraded) ---
+export const KNOCKBACK_DISTANCE_BASE = 25;     // pixels (up from 15)
+export const KNOCKBACK_CRIT_MULTIPLIER = 1.5;
+export const KNOCKBACK_TWEEN_DURATION = 150;   // ms
+
+// --- Whiff ---
+export const WHIFF_ARC_ALPHA = 0.15;
+export const WHIFF_ARC_FADE_DURATION = 120;    // ms
+
 // --- Camera ---
 export const CAMERA_LERP = 0.1;
 export const SCREEN_SHAKE_DURATION = 0.1;

@@ -16,9 +16,14 @@ import {
   BASIC_ATTACK_COOLDOWN,
   MIN_DAMAGE,
   DEFENSE_CONSTANT,
-  KNOCKBACK_DISTANCE,
+  KNOCKBACK_DISTANCE_BASE,
+  KNOCKBACK_CRIT_MULTIPLIER,
+  KNOCKBACK_TWEEN_DURATION,
   INVULNERABILITY_AFTER_HIT,
   DEATH_GOLD_LOSS_PERCENT,
+  ATTACK_WINDUP_DURATION,
+  ATTACK_SWING_DURATION,
+  ATTACK_FOLLOW_THROUGH_DURATION,
 } from '@/data/constants';
 import { calculateDamage, deathMilestoneLevel } from '@/data/balance';
 
@@ -26,6 +31,7 @@ import { calculateDamage, deathMilestoneLevel } from '@/data/balance';
 
 let attackCooldownTimer = 0;
 let invulnerabilityTimer = 0;
+let pendingAttackAngle = 0;
 
 // --- Spatial hit detection ---
 
@@ -103,19 +109,35 @@ export function checkHitCircle(
 // --- Attack execution ---
 
 /**
- * Perform a basic melee attack in an arc in front of the player.
- * Checks all alive monsters in the current zone for overlap.
+ * Perform a basic melee attack — enters windup phase.
+ * Hit detection happens during the swing phase (in update()).
  */
 export function performBasicAttack(angle: number): void {
   const player = getPlayer();
-  const state = getState();
 
-  // Check cooldown
+  // Check cooldown or already attacking
   if (attackCooldownTimer > 0) return;
+  if (player.attackPhase !== 'none') return;
 
-  // Set attack state
+  // Start cooldown from click time
   player.isAttacking = true;
   attackCooldownTimer = BASIC_ATTACK_COOLDOWN / player.attackSpeed;
+
+  // Enter windup phase
+  pendingAttackAngle = angle;
+  player.attackPhase = 'windup';
+  player.attackPhaseTimer = ATTACK_WINDUP_DURATION;
+  player.attackAngle = angle;
+
+  emit('combat:attackWindup', { angle, duration: ATTACK_WINDUP_DURATION });
+}
+
+/**
+ * Resolve basic attack hits — called when swing phase begins.
+ */
+function resolveBasicAttackHits(angle: number): void {
+  const player = getPlayer();
+  const state = getState();
 
   // Build target list from alive monsters
   const aliveMonsters = state.monsters.filter(m => !m.isDead);
@@ -140,7 +162,7 @@ export function performBasicAttack(angle: number): void {
     damageMonster(monsterId, baseDmg, player.critChance, player.critDamage, 'physical');
   }
 
-  // If nothing was hit, we can emit a miss/whiff for audio feedback
+  // If nothing was hit, emit a whiff
   if (hitIds.length === 0) {
     const missX = player.x + Math.cos(angle) * BASIC_ATTACK_RANGE * 0.7;
     const missY = player.y + Math.sin(angle) * BASIC_ATTACK_RANGE * 0.7;
@@ -210,13 +232,20 @@ export function damageMonster(
   const kbDx = monster.x - player.x;
   const kbDy = monster.y - player.y;
   const kbDist = Math.sqrt(kbDx * kbDx + kbDy * kbDy);
+  const knockbackDist = KNOCKBACK_DISTANCE_BASE * (isCrit ? KNOCKBACK_CRIT_MULTIPLIER : 1);
+  const fromX = monster.x;
+  const fromY = monster.y;
   if (kbDist > 0) {
-    monster.x += (kbDx / kbDist) * KNOCKBACK_DISTANCE;
-    monster.y += (kbDy / kbDist) * KNOCKBACK_DISTANCE;
+    // Update logical position instantly (game systems see correct position)
+    monster.x += (kbDx / kbDist) * knockbackDist;
+    monster.y += (kbDy / kbDist) * knockbackDist;
   }
 
   // Track player stats
   player.totalDamageDealt += finalDamage;
+
+  // Compute impact angle from player to monster
+  const impactAngle = Math.atan2(kbDy, kbDx);
 
   // Emit damage dealt event (for UI damage numbers, etc.)
   emit('combat:damageDealt', {
@@ -224,9 +253,32 @@ export function damageMonster(
     damage: finalDamage,
     isCrit,
     damageType,
-    x: monster.x,
-    y: monster.y,
+    x: fromX,
+    y: fromY,
   });
+
+  // Emit enriched impact event for VFX
+  emit('combat:impact', {
+    x: fromX,
+    y: fromY,
+    angle: impactAngle,
+    damage: finalDamage,
+    isCrit,
+    damageType,
+    targetId: monsterId,
+  });
+
+  // Emit knockback event for smooth visual tween
+  if (kbDist > 0) {
+    emit('combat:knockback', {
+      targetId: monsterId,
+      fromX,
+      fromY,
+      toX: monster.x,
+      toY: monster.y,
+      duration: KNOCKBACK_TWEEN_DURATION,
+    });
+  }
 
   emit('monster:damaged', {
     monsterId,
@@ -348,28 +400,56 @@ function onMonsterAttack(data: { monsterId: string; damage: number }): void {
 export function init(): void {
   attackCooldownTimer = 0;
   invulnerabilityTimer = 0;
+  pendingAttackAngle = 0;
 
   on('combat:playerAttack', onPlayerAttack);
   on('combat:monsterAttack', onMonsterAttack);
 }
 
 export function update(dt: number): void {
-  // Tick attack cooldown
+  const player = getPlayer();
+
+  // --- Attack phase pipeline ---
+  if (player.attackPhase !== 'none') {
+    player.attackPhaseTimer -= dt;
+
+    if (player.attackPhaseTimer <= 0) {
+      // Phase transition
+      if (player.attackPhase === 'windup') {
+        // Windup → Swing: resolve hits
+        player.attackPhase = 'swing';
+        player.attackPhaseTimer = ATTACK_SWING_DURATION;
+        emit('combat:attackSwing', { angle: pendingAttackAngle, duration: ATTACK_SWING_DURATION });
+        resolveBasicAttackHits(pendingAttackAngle);
+      } else if (player.attackPhase === 'swing') {
+        // Swing → Follow-through
+        player.attackPhase = 'followthrough';
+        player.attackPhaseTimer = ATTACK_FOLLOW_THROUGH_DURATION;
+        emit('combat:attackFollowThrough', { angle: pendingAttackAngle, duration: ATTACK_FOLLOW_THROUGH_DURATION });
+      } else if (player.attackPhase === 'followthrough') {
+        // Follow-through → Complete
+        player.attackPhase = 'none';
+        player.attackPhaseTimer = 0;
+        emit('combat:attackComplete');
+      }
+    }
+  }
+
+  // --- Tick attack cooldown ---
   if (attackCooldownTimer > 0) {
     attackCooldownTimer -= dt;
     if (attackCooldownTimer <= 0) {
       attackCooldownTimer = 0;
-      const player = getPlayer();
       player.isAttacking = false;
+      emit('combat:attackReady');
     }
   }
 
-  // Tick invulnerability
+  // --- Tick invulnerability ---
   if (invulnerabilityTimer > 0) {
     invulnerabilityTimer -= dt;
     if (invulnerabilityTimer <= 0) {
       invulnerabilityTimer = 0;
-      const player = getPlayer();
       player.isInvulnerable = false;
     }
   }

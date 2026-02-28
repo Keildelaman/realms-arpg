@@ -41,6 +41,22 @@ function getSkillDef(skillId: string): SkillDefinition | undefined {
   return SKILLS[skillId];
 }
 
+function getEfficientCastingReduction(): number {
+  const player = getPlayer();
+
+  if (!player.passiveSkills.includes('efficient_casting')) {
+    return 0;
+  }
+
+  const level = getSkillLevel('efficient_casting');
+  if (level <= 0) return 0;
+
+  // Scales from 8% to 20% across levels 1-5.
+  const clampedLevel = Math.min(level, 5);
+  const t = (clampedLevel - 1) / 4;
+  return 0.08 + (0.20 - 0.08) * t;
+}
+
 function ensureSkillState(skillId: string): SkillRuntimeState {
   const state = getState();
   if (!state.skillStates[skillId]) {
@@ -109,7 +125,7 @@ export function getEffectiveCooldown(skillId: string): number {
 
 /**
  * Get the energy cost for a skill at its current level.
- * Passives like efficient_casting can modify this via event-driven reduction.
+ * Passives like efficient_casting can reduce the final value.
  */
 export function getEffectiveEnergyCost(skillId: string): number {
   const def = getSkillDef(skillId);
@@ -121,7 +137,11 @@ export function getEffectiveEnergyCost(skillId: string): number {
   const levelData = def.levels[level - 1];
   if (!levelData) return 0;
 
-  return levelData.energyCost;
+  const baseCost = levelData.energyCost;
+  const reduction = getEfficientCastingReduction();
+  const reducedCost = baseCost * (1 - reduction);
+
+  return Math.max(0, reducedCost);
 }
 
 /**

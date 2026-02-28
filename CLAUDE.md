@@ -41,10 +41,16 @@ assets/
 ├── tilemaps/         # Tiled JSON maps
 └── audio/            # Sound effects + music
 
+tests/
+├── fixtures/         # Playwright test fixtures
+├── helpers/          # Game state query helpers
+└── specs/            # Test specs (ui, combat, skills)
+
 docs/
 ├── TECH_STACK.md     # Technology choices and rationale
 ├── CLICKER_REFERENCE.md  # Detailed reference of clicker systems to port
-└── ARCHITECTURE.md   # System design, scene structure, entity model
+├── ARCHITECTURE.md   # System design, scene structure, entity model
+└── MAP_SYSTEM.md     # Hub + Expedition procedural map design
 ```
 
 ---
@@ -181,4 +187,5 @@ finalDamage = max(1, damage × (1 - damageReduction))
 | `docs/TECH_STACK.md` | Why Phaser + TypeScript + Vite |
 | `docs/CLICKER_REFERENCE.md` | Complete inventory of clicker systems to port/adapt |
 | `docs/ARCHITECTURE.md` | Scene structure, entity model, system integration |
+| `docs/MAP_SYSTEM.md` | Hub ("Haven") + Expedition procedural map system design |
 | `../clicker_02_26/docs/` | Original 25+ game design spec documents |

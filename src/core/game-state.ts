@@ -73,6 +73,13 @@ function createDefaultPlayer(): PlayerState {
     y: 300,
     facingAngle: 0,
 
+    velocityX: 0,
+    velocityY: 0,
+
+    attackPhase: 'none',
+    attackPhaseTimer: 0,
+    attackAngle: 0,
+
     isAttacking: false,
     isDashing: false,
     isInvulnerable: false,

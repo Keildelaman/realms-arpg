@@ -22,7 +22,7 @@ Phaser uses **Scenes** as the top-level organizational unit. Our game runs multi
 | **BootScene** | Load all assets (sprites, tilemaps, audio), show loading bar, then start GameScene |
 | **GameScene** | World rendering, entity management, physics, camera. Owns the game loop (`update()`). |
 | **UIScene** | Overlay HUD rendered on top of GameScene. Reads state, listens to events. Never touches world objects. |
-| **MenuScene** | Pause menu, inventory, skill tree, shop (future — modal overlays) |
+| **HubScene** | *(planned)* Safe zone with NPCs — merchant, blacksmith, stash, map device. See `docs/MAP_SYSTEM.md`. |
 
 ## System Integration Pattern
 
@@ -107,7 +107,7 @@ src/
 │   ├── BootScene.ts        # Asset loading
 │   ├── GameScene.ts        # World, entities, physics, camera, system ticks
 │   ├── UIScene.ts          # HUD overlay
-│   └── MenuScene.ts        # Inventory, skills, shop overlays
+│   └── HubScene.ts         # (planned) Safe zone with NPCs, map device
 │
 ├── entities/
 │   ├── PlayerEntity.ts     # Player sprite + movement + attack animations

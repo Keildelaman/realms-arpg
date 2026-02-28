@@ -63,9 +63,9 @@ The clicker uses an **event-driven, decoupled architecture** that maps almost di
 |--------|---------|
 | **movement.ts** | Player + monster movement, collision response, knockback |
 | **monster-ai.ts** | Behavior trees/state machines (idle → patrol → chase → attack → flee) |
-| **spatial-combat.ts** | Hitbox management, AoE shapes, projectile tracking, range checks |
-| **pathfinding.ts** | A* or grid-based pathfinding for monsters |
-| **tilemap.ts** | Map loading, tile collision, zone transitions |
+| **spatial-combat.ts** | ✅ Merged into `combat.ts` — hitbox arcs, circles, range checks |
+| **pathfinding.ts** | ⏳ Not yet needed — monsters use direct movement toward player |
+| **tilemap.ts** | ⏳ Planned — see `docs/MAP_SYSTEM.md` for procedural map design |
 
 ---
 
@@ -267,4 +267,4 @@ All paths relative to `../clicker_02_26/`:
 | Item crafting | `js/systems/item-crafting.js` |
 | Legendary effects | `js/systems/item-effects.js` (LEGENDARY_EFFECT_HANDLERS) |
 | Design specs | `docs/` (25+ specification documents) |
-| ARPG analysis | `docs/analysis/arpg-conversion-feasibility.md` (on branch) |
+| ARPG map design | `docs/MAP_SYSTEM.md` (hub + expedition system) |

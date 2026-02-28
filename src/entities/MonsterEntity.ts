@@ -5,7 +5,7 @@
 import Phaser from 'phaser';
 import type { MonsterInstance, DamageType } from '@/core/types';
 import { getMonsterById } from '@/core/game-state';
-import { on } from '@/core/event-bus';
+import { on, off } from '@/core/event-bus';
 import {
   DEATH_ANIMATION_DURATION,
   HIT_FLASH_DURATION,
@@ -32,6 +32,11 @@ export class MonsterEntity {
   private deathTimer: number = 0;
   private statusTintApplied: boolean = false;
   private textureKey: string;
+
+  // Smooth knockback
+  private knockbackTween: Phaser.Tweens.Tween | null = null;
+  private isKnockedBack: boolean = false;
+  private impactScaleTween: Phaser.Tweens.Tween | null = null;
 
   constructor(scene: Phaser.Scene, monster: MonsterInstance) {
     this.scene = scene;
@@ -90,6 +95,9 @@ export class MonsterEntity {
 
     // Draw initial HP bar
     this.drawHPBar(monster);
+
+    // Listen for knockback events
+    on('combat:knockback', this.onKnockback);
   }
 
   update(dt: number): void {
@@ -114,7 +122,10 @@ export class MonsterEntity {
     }
 
     // Sync position from MonsterInstance (AI updates state, entity follows)
-    this.sprite.setPosition(monster.x, monster.y);
+    // Skip position sync while knockback tween is animating
+    if (!this.isKnockedBack) {
+      this.sprite.setPosition(monster.x, monster.y);
+    }
 
     // Update HP bar
     this.drawHPBar(monster);
@@ -260,6 +271,17 @@ export class MonsterEntity {
     this.isDying = true;
     this.deathTimer = DEATH_ANIMATION_DURATION;
 
+    // Stop knockback tweens
+    if (this.knockbackTween) {
+      this.knockbackTween.stop();
+      this.knockbackTween = null;
+      this.isKnockedBack = false;
+    }
+    if (this.impactScaleTween) {
+      this.impactScaleTween.stop();
+      this.impactScaleTween = null;
+    }
+
     // Hide HP bar immediately
     this.hpBarBg.setVisible(false);
     this.hpBar.setVisible(false);
@@ -307,7 +329,76 @@ export class MonsterEntity {
     return this.isDying;
   }
 
+  // --- Knockback handler ---
+
+  private onKnockback = (data: {
+    targetId: string;
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+    duration: number;
+  }): void => {
+    if (data.targetId !== this.monsterId) return;
+    if (this.isDying) return;
+
+    // Cancel existing knockback tween
+    if (this.knockbackTween) {
+      this.knockbackTween.stop();
+      this.knockbackTween = null;
+    }
+
+    this.isKnockedBack = true;
+
+    // Tween sprite from current position to knockback destination
+    this.knockbackTween = this.scene.tweens.add({
+      targets: this.sprite,
+      x: data.toX,
+      y: data.toY,
+      duration: data.duration,
+      ease: 'Power2',
+      onComplete: () => {
+        this.isKnockedBack = false;
+        this.knockbackTween = null;
+      },
+    });
+
+    // Cancel existing impact scale tween
+    if (this.impactScaleTween) {
+      this.impactScaleTween.stop();
+      this.impactScaleTween = null;
+    }
+
+    // Brief scale pop on impact
+    const monster = getMonsterById(this.monsterId);
+    const baseScale = monster?.isBoss ? 1.3 : 1.0;
+
+    // Squash on hit
+    this.sprite.setScale(baseScale * 1.15, baseScale * 0.85);
+    this.impactScaleTween = this.scene.tweens.add({
+      targets: this.sprite,
+      scaleX: baseScale,
+      scaleY: baseScale,
+      duration: 120,
+      ease: 'Back.easeOut',
+      onComplete: () => {
+        this.impactScaleTween = null;
+      },
+    });
+  };
+
   destroy(): void {
+    off('combat:knockback', this.onKnockback);
+
+    if (this.knockbackTween) {
+      this.knockbackTween.stop();
+      this.knockbackTween = null;
+    }
+    if (this.impactScaleTween) {
+      this.impactScaleTween.stop();
+      this.impactScaleTween = null;
+    }
+
     this.hpBarBg.destroy();
     this.hpBar.destroy();
     if (this.shieldBar) this.shieldBar.destroy();
