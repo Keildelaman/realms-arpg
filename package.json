@@ -7,7 +7,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "npx playwright test --config tests/playwright.config.ts",
+    "test:ui": "npx playwright test --config tests/playwright.config.ts --ui",
+    "test:headed": "npx playwright test --config tests/playwright.config.ts --headed",
+    "test:debug": "npx playwright test --config tests/playwright.config.ts --debug"
   },
   "keywords": ["arpg", "phaser", "game"],
   "author": "",
