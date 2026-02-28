@@ -1,5 +1,5 @@
 // ============================================================================
-// Realms of Clickoria: ARPG — Master Type Definitions
+// Ashen Grace — Master Type Definitions
 // ============================================================================
 
 // --- Basic Enums / Union Types ---

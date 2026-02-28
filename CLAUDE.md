@@ -1,8 +1,8 @@
-# CLAUDE.md — Realms of Clickoria ARPG
+# CLAUDE.md — Ashen Grace ARPG
 
 ## Project Overview
 
-**Realms of Clickoria: ARPG Edition** — A 2D action RPG built with Phaser 3 and TypeScript. Evolved from the clicker game of the same name, reusing its deep RPG backend (46 skills, 54 monsters, 61 affixes, 15 legendaries, 5 status effects) with new spatial gameplay.
+**Ashen Grace** — A 2D action RPG built with Phaser 3 and TypeScript. Evolved from the Realms of Clickoria clicker game, reusing its deep RPG backend (46 skills, 54 monsters, 61 affixes, 15 legendaries, 5 status effects) with new spatial gameplay.
 
 **Clicker repo:** `../clicker_02_26/` — Reference for systems, data, balance, and design docs.
 

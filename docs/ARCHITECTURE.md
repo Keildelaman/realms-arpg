@@ -1,4 +1,4 @@
-# Architecture — Realms of Clickoria ARPG
+# Architecture — Ashen Grace
 
 ## Scene Structure
 

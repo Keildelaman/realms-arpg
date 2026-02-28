@@ -1,4 +1,4 @@
-# Tech Stack — Realms of Clickoria ARPG
+# Tech Stack — Ashen Grace
 
 ## Core Technologies
 

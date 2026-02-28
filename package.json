@@ -1,7 +1,7 @@
 {
-  "name": "realms-arpg",
+  "name": "ashen-grace",
   "version": "0.1.0",
-  "description": "Realms of Clickoria — ARPG edition. A 2D action RPG built with Phaser 3 and TypeScript.",
+  "description": "Ashen Grace — A 2D action RPG built with Phaser 3 and TypeScript.",
   "private": true,
   "type": "module",
   "scripts": {

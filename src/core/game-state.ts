@@ -104,7 +104,7 @@ function createDefaultPlayer(): PlayerState {
   };
 }
 
-const EXPEDITION_META_STORAGE_KEY = 'realms_arpg_expedition_meta_v1';
+const EXPEDITION_META_STORAGE_KEY = 'ashen_grace_expedition_meta_v1';
 
 function createDefaultExpeditionMeta(): ExpeditionMetaProgress {
   return {
