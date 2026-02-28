@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { emit } from '@/core/event-bus';
-import { getPlayer } from '@/core/game-state';
+import { getPlayer, getState } from '@/core/game-state';
 import {
   DASH_SPEED,
   DASH_DURATION,
@@ -11,6 +11,8 @@ import {
   MOVE_ACCELERATION,
   MOVE_DECELERATION,
 } from '@/data/constants';
+import { ZONES } from '@/data/zones.data';
+import { resolveMovementAgainstMap } from './expedition-generation';
 
 // --- Input state ---
 
@@ -96,6 +98,15 @@ export function setMousePressed(pressed: boolean): void {
     mouseJustPressed = true;
   }
   mousePressed = pressed;
+}
+
+/** Returns true if mouse was just pressed, and clears the flag. */
+export function consumeMouseJustPressed(): boolean {
+  if (mouseJustPressed) {
+    mouseJustPressed = false;
+    return true;
+  }
+  return false;
 }
 
 // --- Dash ---
@@ -190,8 +201,24 @@ export function update(dt: number): void {
     dashTimer -= dt;
 
     // Move in dash direction at dash speed
-    player.x += dashDirectionX * DASH_SPEED * dt;
-    player.y += dashDirectionY * DASH_SPEED * dt;
+    const dashToX = player.x + dashDirectionX * DASH_SPEED * dt;
+    const dashToY = player.y + dashDirectionY * DASH_SPEED * dt;
+    const state = getState();
+    if (state.activeExpedition) {
+      const resolved = resolveMovementAgainstMap(
+        state.activeExpedition.map,
+        player.x,
+        player.y,
+        dashToX,
+        dashToY,
+        14,
+      );
+      player.x = resolved.x;
+      player.y = resolved.y;
+    } else {
+      player.x = dashToX;
+      player.y = dashToY;
+    }
 
     if (dashTimer <= 0) {
       endDash();
@@ -257,8 +284,47 @@ export function update(dt: number): void {
   currentVy = approach(currentVy, targetVy, accel * dt);
 
   // Apply velocity to position
-  player.x += currentVx * dt;
-  player.y += currentVy * dt;
+  const state = getState();
+  const targetX = player.x + currentVx * dt;
+  const targetY = player.y + currentVy * dt;
+
+  if (state.activeExpedition) {
+    const resolved = resolveMovementAgainstMap(
+      state.activeExpedition.map,
+      player.x,
+      player.y,
+      targetX,
+      targetY,
+      14,
+    );
+    player.x = resolved.x;
+    player.y = resolved.y;
+  } else {
+    player.x = targetX;
+    player.y = targetY;
+  }
+
+  // Clamp to world bounds.
+  let worldX = 0;
+  let worldY = 0;
+  let worldWidth = 2400;
+  let worldHeight = 2400;
+  if (state.activeExpedition) {
+    worldX = state.activeExpedition.map.bounds.x;
+    worldY = state.activeExpedition.map.bounds.y;
+    worldWidth = state.activeExpedition.map.bounds.width;
+    worldHeight = state.activeExpedition.map.bounds.height;
+  } else {
+    const zone = ZONES[state.activeZoneId];
+    if (zone) {
+      worldX = 0;
+      worldY = 0;
+      worldWidth = zone.width;
+      worldHeight = zone.height;
+    }
+  }
+  player.x = Math.max(worldX + 16, Math.min(worldX + worldWidth - 16, player.x));
+  player.y = Math.max(worldY + 16, Math.min(worldY + worldHeight - 16, player.y));
 
   // Write velocity to state for visual layer
   player.velocityX = currentVx;
@@ -284,9 +350,4 @@ export function update(dt: number): void {
     emit('player:velocityChanged', { vx: currentVx, vy: currentVy, speed: currentSpeed });
   }
 
-  // --- Mouse click → attack ---
-  if (mouseJustPressed) {
-    emit('combat:playerAttack', { angle: player.facingAngle });
-    mouseJustPressed = false;
-  }
 }

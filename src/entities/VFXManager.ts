@@ -36,7 +36,6 @@ export class VFXManager {
     on('combat:impact', this.onImpact);
     on('combat:attackSwing', this.onAttackSwing);
     on('combat:miss', this.onMiss);
-    on('combat:attackReady', this.onAttackReady);
   }
 
   // --- Attack arc (filled wedge) ---
@@ -166,33 +165,9 @@ export class VFXManager {
     }
   };
 
-  // --- Attack ready pulse ---
-
-  private onAttackReady = (): void => {
-    const player = getPlayer();
-    const ring = this.scene.add.circle(player.x, player.y, 16, 0xffffff, 0);
-    ring.setStrokeStyle(2, 0xffffff, 0.6);
-    ring.setDepth(11);
-
-    this.scene.tweens.add({
-      targets: ring,
-      scaleX: 2.5,
-      scaleY: 2.5,
-      alpha: 0,
-      duration: 300,
-      ease: 'Power2',
-      onUpdate: () => {
-        // Update stroke alpha as the ring expands
-        ring.setStrokeStyle(2, 0xffffff, Math.max(0, 0.6 - ring.scaleX * 0.2));
-      },
-      onComplete: () => ring.destroy(),
-    });
-  };
-
   destroy(): void {
     off('combat:impact', this.onImpact);
     off('combat:attackSwing', this.onAttackSwing);
     off('combat:miss', this.onMiss);
-    off('combat:attackReady', this.onAttackReady);
   }
 }

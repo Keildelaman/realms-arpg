@@ -12,7 +12,7 @@ export class BootScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.scene.start('GameScene');
+    this.scene.start('HubScene');
   }
 
   private createPlaceholderTextures(): void {

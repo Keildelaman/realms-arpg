@@ -52,21 +52,21 @@ export function checkHitArc(
   angle: number,
   arcWidth: number,
   range: number,
-  targets: ReadonlyArray<{ id: string; x: number; y: number }>,
+  targets: ReadonlyArray<{ id: string; x: number; y: number; size?: number }>,
 ): string[] {
   const halfArcRad = (arcWidth / 2) * (Math.PI / 180);
-  const rangeSq = range * range;
   const hitIds: string[] = [];
 
   for (const target of targets) {
     const dx = target.x - px;
     const dy = target.y - py;
-    const distSq = dx * dx + dy * dy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const radius = (target.size ?? 0) / 2;
 
-    // Distance check
-    if (distSq > rangeSq) continue;
+    // Distance check — monster edge within range
+    if (dist - radius > range) continue;
 
-    // Angle check — compute angle to target and compare with arc
+    // Angle check — widen arc by the angle the monster radius subtends
     const angleToTarget = Math.atan2(dy, dx);
     let angleDiff = angleToTarget - angle;
 
@@ -74,7 +74,8 @@ export function checkHitArc(
     while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
     while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
 
-    if (Math.abs(angleDiff) <= halfArcRad) {
+    const sizeArc = dist > 0 ? Math.atan2(radius, dist) : halfArcRad;
+    if (Math.abs(angleDiff) <= halfArcRad + sizeArc) {
       hitIds.push(target.id);
     }
   }
@@ -90,15 +91,16 @@ export function checkHitCircle(
   x: number,
   y: number,
   radius: number,
-  targets: ReadonlyArray<{ id: string; x: number; y: number }>,
+  targets: ReadonlyArray<{ id: string; x: number; y: number; size?: number }>,
 ): string[] {
-  const radiusSq = radius * radius;
   const hitIds: string[] = [];
 
   for (const target of targets) {
     const dx = target.x - x;
     const dy = target.y - y;
-    if (dx * dx + dy * dy <= radiusSq) {
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const monsterRadius = (target.size ?? 0) / 2;
+    if (dist <= radius + monsterRadius) {
       hitIds.push(target.id);
     }
   }
@@ -368,16 +370,21 @@ export function damagePlayer(amount: number, source: string): number {
 // --- Player death ---
 
 function handlePlayerDeath(): void {
+  const state = getState();
   const player = getPlayer();
 
-  // Apply death penalty: lose 50% gold
-  const goldLost = Math.floor(player.gold * DEATH_GOLD_LOSS_PERCENT);
-  player.gold -= goldLost;
+  // Expedition deaths are handled by the expeditions system.
+  if (state.gameMode !== 'expedition') {
+    // Apply death penalty: lose 50% gold
+    const goldLost = Math.floor(player.gold * DEATH_GOLD_LOSS_PERCENT);
+    player.gold -= goldLost;
 
-  // Reset to milestone level (nearest multiple of MILESTONE_INTERVAL below current)
-  const milestoneLevel = deathMilestoneLevel(player.level);
-  // Note: actual level/stat reset logic is handled by listeners of 'player:died'
-  // We just record the milestone for reference
+    // Reset to milestone level (nearest multiple of MILESTONE_INTERVAL below current)
+    const milestoneLevel = deathMilestoneLevel(player.level);
+    // Note: actual level/stat reset logic is handled by listeners of 'player:died'
+    // We just record the milestone for reference
+    void milestoneLevel;
+  }
 
   emit('player:died');
 }
@@ -441,8 +448,13 @@ export function update(dt: number): void {
     if (attackCooldownTimer <= 0) {
       attackCooldownTimer = 0;
       player.isAttacking = false;
-      emit('combat:attackReady');
     }
+  }
+
+  // --- Sync cooldown to basic_attack skill state for UI display ---
+  const state = getState();
+  if (state.skillStates['basic_attack']) {
+    state.skillStates['basic_attack'].cooldownRemaining = attackCooldownTimer;
   }
 
   // --- Tick invulnerability ---

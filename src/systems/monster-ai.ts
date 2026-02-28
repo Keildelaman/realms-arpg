@@ -14,6 +14,8 @@ import {
   getPlayer,
   getMonsterById,
 } from '@/core/game-state';
+import { ZONES } from '@/data/zones.data';
+import { resolveMovementAgainstMap } from './expedition-generation';
 import {
   SLOW_SPEED_REDUCTION,
   DEATH_ANIMATION_DURATION,
@@ -263,9 +265,24 @@ function updateFlee(
     const escapeSpeed = monster.moveSpeed * SWIFT_ESCAPE_SPEED_MULT * speedMod;
     const normX = dx / dist;
     const normY = dy / dist;
-
-    monster.x += normX * escapeSpeed * dt;
-    monster.y += normY * escapeSpeed * dt;
+    const nextX = monster.x + normX * escapeSpeed * dt;
+    const nextY = monster.y + normY * escapeSpeed * dt;
+    const state = getState();
+    if (state.activeExpedition) {
+      const resolved = resolveMovementAgainstMap(
+        state.activeExpedition.map,
+        monster.x,
+        monster.y,
+        nextX,
+        nextY,
+        Math.max(10, monster.size * 0.35),
+      );
+      monster.x = resolved.x;
+      monster.y = resolved.y;
+    } else {
+      monster.x = nextX;
+      monster.y = nextY;
+    }
   }
 }
 
@@ -416,15 +433,30 @@ function applySeparation(monsters: MonsterInstance[], dt: number): void {
  */
 function clampToWorldBounds(monster: MonsterInstance): void {
   const halfSize = monster.size * 0.5;
+  const state = getState();
 
-  // Use reasonable defaults for world bounds
-  // The actual zone dimensions come from the zone data,
-  // but we use the physics world bounds (2400x2400 from GameScene)
-  const worldWidth = 2400;
-  const worldHeight = 2400;
+  let worldX = 0;
+  let worldY = 0;
+  let worldWidth = 2400;
+  let worldHeight = 2400;
 
-  monster.x = Math.max(halfSize, Math.min(worldWidth - halfSize, monster.x));
-  monster.y = Math.max(halfSize, Math.min(worldHeight - halfSize, monster.y));
+  if (state.activeExpedition) {
+    worldX = state.activeExpedition.map.bounds.x;
+    worldY = state.activeExpedition.map.bounds.y;
+    worldWidth = state.activeExpedition.map.bounds.width;
+    worldHeight = state.activeExpedition.map.bounds.height;
+  } else {
+    const zone = ZONES[state.activeZoneId];
+    if (zone) {
+      worldX = 0;
+      worldY = 0;
+      worldWidth = zone.width;
+      worldHeight = zone.height;
+    }
+  }
+
+  monster.x = Math.max(worldX + halfSize, Math.min(worldX + worldWidth - halfSize, monster.x));
+  monster.y = Math.max(worldY + halfSize, Math.min(worldY + worldHeight - halfSize, monster.y));
 }
 
 // --- Helpers ---
@@ -447,9 +479,25 @@ function moveToward(
 
   const normX = dx / dist;
   const normY = dy / dist;
+  const nextX = monster.x + normX * speed * dt;
+  const nextY = monster.y + normY * speed * dt;
+  const state = getState();
 
-  monster.x += normX * speed * dt;
-  monster.y += normY * speed * dt;
+  if (state.activeExpedition) {
+    const resolved = resolveMovementAgainstMap(
+      state.activeExpedition.map,
+      monster.x,
+      monster.y,
+      nextX,
+      nextY,
+      Math.max(10, monster.size * 0.35),
+    );
+    monster.x = resolved.x;
+    monster.y = resolved.y;
+  } else {
+    monster.x = nextX;
+    monster.y = nextY;
+  }
 }
 
 /**

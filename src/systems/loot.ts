@@ -193,6 +193,14 @@ export function getActiveLootCount(): number {
   return activeLootDrops.filter(d => !d.isPickedUp).length;
 }
 
+/**
+ * Remove all active loot drops from the world.
+ * Used when transitioning between hub and expeditions.
+ */
+export function clearAllLootDrops(): void {
+  activeLootDrops.length = 0;
+}
+
 // --- Event handlers ---
 
 function onMonsterDied(data: {
@@ -227,12 +235,12 @@ function onMonsterDied(data: {
 function getTierFromZone(zoneId: string): number {
   const tierMap: Record<string, number> = {
     whisperwood: 1,
-    crystal_caves: 2,
-    scorched_plains: 3,
-    shadow_marsh: 4,
-    frozen_peaks: 5,
-    demon_wastes: 6,
-    void_sanctum: 7,
+    dusthaven: 2,
+    frosthollow: 3,
+    emberpeak: 4,
+    shadowmere: 5,
+    crystalspire: 6,
+    void_rift: 7,
   };
   return tierMap[zoneId] ?? 1;
 }
