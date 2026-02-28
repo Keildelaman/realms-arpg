@@ -1,0 +1,22 @@
+{
+  "name": "realms-arpg",
+  "version": "0.1.0",
+  "description": "Realms of Clickoria — ARPG edition. A 2D action RPG built with Phaser 3 and TypeScript.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": ["arpg", "phaser", "game"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}
