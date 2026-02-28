@@ -58,7 +58,7 @@ export const MAX_SKILL_LEVEL = 5;
 export const MAX_LEVEL = 100;
 
 // --- Skills ---
-export const ACTIVE_SKILL_SLOTS = 4;
+export const ACTIVE_SKILL_SLOTS = 6;
 export const PASSIVE_SKILL_SLOTS = 3;
 export const COOLDOWN_FLOOR_PERCENT = 0.5; // min CD = 50% of base
 

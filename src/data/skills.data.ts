@@ -19,6 +19,27 @@ export const SKILLS: Record<string, SkillDefinition> = {
   // ACTIVE SKILLS (16)
   // ==========================================================================
 
+  // --- Basic Attack ---
+
+  basic_attack: {
+    id: 'basic_attack',
+    name: 'Attack',
+    description: 'A basic melee swing.',
+    category: 'power',
+    type: 'active',
+    mechanic: 'melee',
+    targeting: 'directional',
+    damageType: 'physical',
+    levels: [
+      { damage: 1.0, cooldown: 0.45, energyCost: 0 },
+    ],
+    unlockLevel: 1,
+    unlockCost: 0,
+    color: '#4488ff',
+    range: 80,
+    arcWidth: 120,
+  },
+
   // --- Power Category (3) ---
 
   heavy_slash: {

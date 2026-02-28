@@ -2,7 +2,16 @@
 // Game State — Central mutable state store
 // ============================================================================
 
-import type { GameState, PlayerState, MonsterInstance, ItemInstance, EquipmentSlot } from './types';
+import type {
+  GameState,
+  PlayerState,
+  MonsterInstance,
+  ItemInstance,
+  EquipmentSlot,
+  ExpeditionRunState,
+  ExpeditionMetaProgress,
+  GameMode,
+} from './types';
 import {
   BASE_PLAYER_HP,
   BASE_PLAYER_ATTACK,
@@ -54,7 +63,7 @@ function createDefaultPlayer(): PlayerState {
     statusPotency: 1.0,
 
     skillPoints: 1, // start with 1 SP for first skill
-    activeSkills: [null, null, null, null],
+    activeSkills: ['basic_attack', null, null, null, null, null],
     passiveSkills: [null, null, null],
     unlockedSkills: [],
     skillLevels: {},
@@ -95,11 +104,62 @@ function createDefaultPlayer(): PlayerState {
   };
 }
 
+const EXPEDITION_META_STORAGE_KEY = 'realms_arpg_expedition_meta_v1';
+
+function createDefaultExpeditionMeta(): ExpeditionMetaProgress {
+  return {
+    unlockedTiers: [1],
+    firstClearClaimed: {},
+    totalRuns: 0,
+    totalCompletions: 0,
+    totalFailures: 0,
+  };
+}
+
+function loadExpeditionMetaFromStorage(): ExpeditionMetaProgress {
+  if (typeof window === 'undefined') return createDefaultExpeditionMeta();
+
+  try {
+    const raw = window.localStorage.getItem(EXPEDITION_META_STORAGE_KEY);
+    if (!raw) return createDefaultExpeditionMeta();
+
+    const parsed = JSON.parse(raw) as Partial<ExpeditionMetaProgress>;
+    return {
+      unlockedTiers: Array.isArray(parsed.unlockedTiers) && parsed.unlockedTiers.length > 0
+        ? [...new Set(parsed.unlockedTiers.map(v => Math.max(1, Math.min(7, Math.floor(v)))))]
+            .sort((a, b) => a - b)
+        : [1],
+      firstClearClaimed: parsed.firstClearClaimed ?? {},
+      totalRuns: parsed.totalRuns ?? 0,
+      totalCompletions: parsed.totalCompletions ?? 0,
+      totalFailures: parsed.totalFailures ?? 0,
+    };
+  } catch {
+    return createDefaultExpeditionMeta();
+  }
+}
+
+function persistExpeditionMeta(): void {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(
+      EXPEDITION_META_STORAGE_KEY,
+      JSON.stringify(state.expeditionMeta),
+    );
+  } catch {
+    // Ignore storage failures (private mode, quota, etc.)
+  }
+}
+
 const state: GameState = {
   player: createDefaultPlayer(),
   monsters: [],
   projectiles: [],
+  gameMode: 'hub',
   activeZoneId: 'whisperwood',
+  activeExpedition: null,
+  expeditionMeta: loadExpeditionMetaFromStorage(),
   isPaused: false,
   gameTime: 0,
 
@@ -122,6 +182,14 @@ export function getState(): GameState {
 
 export function getPlayer(): PlayerState {
   return state.player;
+}
+
+export function getGameMode(): GameMode {
+  return state.gameMode;
+}
+
+export function getActiveExpedition(): ExpeditionRunState | null {
+  return state.activeExpedition;
 }
 
 // --- Player Mutations ---
@@ -222,6 +290,56 @@ export function removeProjectile(id: string): void {
   if (idx !== -1) state.projectiles.splice(idx, 1);
 }
 
+// --- Mode/Expeditions ---
+
+export function setGameMode(mode: GameMode): void {
+  state.gameMode = mode;
+}
+
+export function setActiveExpedition(run: ExpeditionRunState): void {
+  state.activeExpedition = run;
+}
+
+export function clearActiveExpedition(): void {
+  state.activeExpedition = null;
+}
+
+export function setExpeditionMeta(meta: ExpeditionMetaProgress): void {
+  state.expeditionMeta = meta;
+  persistExpeditionMeta();
+}
+
+export function unlockExpeditionTier(tier: number): void {
+  const clamped = Math.max(1, Math.min(7, Math.floor(tier)));
+  if (!state.expeditionMeta.unlockedTiers.includes(clamped)) {
+    state.expeditionMeta.unlockedTiers.push(clamped);
+    state.expeditionMeta.unlockedTiers.sort((a, b) => a - b);
+    persistExpeditionMeta();
+  }
+}
+
+export function markExpeditionFirstClear(key: string): void {
+  if (!state.expeditionMeta.firstClearClaimed[key]) {
+    state.expeditionMeta.firstClearClaimed[key] = true;
+    persistExpeditionMeta();
+  }
+}
+
+export function incrementExpeditionRuns(): void {
+  state.expeditionMeta.totalRuns += 1;
+  persistExpeditionMeta();
+}
+
+export function incrementExpeditionCompletions(): void {
+  state.expeditionMeta.totalCompletions += 1;
+  persistExpeditionMeta();
+}
+
+export function incrementExpeditionFailures(): void {
+  state.expeditionMeta.totalFailures += 1;
+  persistExpeditionMeta();
+}
+
 // --- Zone ---
 
 export function setActiveZone(zoneId: string): void {
@@ -242,11 +360,15 @@ export function incrementZoneKills(zoneId: string): number {
 // --- Game ---
 
 export function resetState(): void {
+  const expeditionMeta = loadExpeditionMetaFromStorage();
   Object.assign(state, {
     player: createDefaultPlayer(),
     monsters: [],
     projectiles: [],
+    gameMode: 'hub',
     activeZoneId: 'whisperwood',
+    activeExpedition: null,
+    expeditionMeta,
     isPaused: false,
     gameTime: 0,
     skillStates: {},

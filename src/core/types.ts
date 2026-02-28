@@ -65,6 +65,21 @@ export type MonsterAIState =
 export type Direction = 'up' | 'down' | 'left' | 'right';
 
 export type AttackPhase = 'none' | 'windup' | 'swing' | 'followthrough';
+export type GameMode = 'hub' | 'expedition';
+export type ObjectiveType =
+  | 'extermination'
+  | 'sweep'
+  | 'boss_hunt'
+  | 'survival'
+  | 'timed_clear';
+export type MapModifier =
+  | 'dense'
+  | 'lethal'
+  | 'haste'
+  | 'armored_horde'
+  | 'boss_empowered';
+export type RoomType = 'spawn' | 'combat' | 'elite' | 'treasure';
+export type ExpeditionRunStatus = 'active' | 'completed' | 'failed' | 'abandoned';
 
 // --- Data Definitions (static, read-only from data files) ---
 
@@ -174,6 +189,137 @@ export interface ZoneDefinition {
   unlockCondition?: string; // boss ID of previous zone
   width: number;  // world width in pixels
   height: number; // world height in pixels
+}
+
+export interface ExpeditionSpawnPoint {
+  id: string;
+  x: number;                // relative to room origin
+  y: number;
+  monsterId: string;        // from zone's monster list
+  isElite: boolean;
+}
+
+export interface ExpeditionRoom {
+  id: string;
+  type: RoomType;
+  x: number;                // world position
+  y: number;
+  width: number;
+  height: number;
+  isBranch: boolean;
+  spawnPoints: ExpeditionSpawnPoint[];
+  spawnTriggered: boolean;
+  cleared: boolean;
+  visited: boolean;
+}
+
+export interface ExpeditionCorridor {
+  id: string;
+  fromRoomId: string;
+  toRoomId: string;
+  points: Vec2[];
+  width: number;
+}
+
+export interface ExpeditionBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ExpeditionGrid {
+  cellSize: number;
+  originX: number;
+  originY: number;
+  width: number;     // in cells
+  height: number;    // in cells
+  walkable: number[]; // 0 blocked, 1 walkable
+}
+
+export interface ExpeditionWallRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ExpeditionLayoutMetrics {
+  loops: number;
+  deadEnds: number;
+  deadEndRatio: number;
+  mainPathRooms: number;
+}
+
+export interface ExpeditionEncounterPoint {
+  id: string;
+  x: number;
+  y: number;
+  packWeight: number;
+}
+
+export interface ExpeditionDecorPoint {
+  x: number;
+  y: number;
+  kind: 'rock' | 'tree' | 'ruin' | 'shard';
+  scale: number;
+}
+
+export interface ExpeditionMap {
+  seed: number;
+  zoneId: string;
+  tier: number;
+  objective: ObjectiveType;
+  modifiers: MapModifier[];
+  rooms: ExpeditionRoom[];
+  corridors: ExpeditionCorridor[];
+  spawnRoomId: string;
+  exitRoomId: string;
+  bounds: ExpeditionBounds;
+  grid: ExpeditionGrid;
+  wallRects: ExpeditionWallRect[];
+  metrics: ExpeditionLayoutMetrics;
+  encounterPoints: ExpeditionEncounterPoint[];
+  decorPoints: ExpeditionDecorPoint[];
+}
+
+export interface ExpeditionProgress {
+  requiredKills: number;
+  currentKills: number;
+  roomsVisited: number;
+  roomsCleared: number;
+}
+
+export interface ExpeditionRewardBreakdown {
+  completionXP: number;
+  completionGold: number;
+  firstClearXPBonus: number;
+  firstClearGoldBonus: number;
+  completionChestCount: number;
+}
+
+export interface ExpeditionRunState {
+  runId: string;
+  seed: number;
+  zoneId: string;
+  tier: number;
+  status: ExpeditionRunStatus;
+  portalsRemaining: number;
+  maxPortals: number;
+  checkpointRoomId: string;
+  checkpointX: number;
+  checkpointY: number;
+  map: ExpeditionMap;
+  progress: ExpeditionProgress;
+  startedAtGameTime: number;
+}
+
+export interface ExpeditionMetaProgress {
+  unlockedTiers: number[];
+  firstClearClaimed: Record<string, boolean>; // key: `${tier}:extermination`
+  totalRuns: number;
+  totalCompletions: number;
+  totalFailures: number;
 }
 
 export interface AffixDefinition {
@@ -440,7 +586,10 @@ export interface GameState {
   player: PlayerState;
   monsters: MonsterInstance[];
   projectiles: ProjectileInstance[];
+  gameMode: GameMode;
   activeZoneId: string;
+  activeExpedition: ExpeditionRunState | null;
+  expeditionMeta: ExpeditionMetaProgress;
   isPaused: boolean;
   gameTime: number; // total elapsed seconds
 
@@ -598,6 +747,24 @@ export type GameEventMap = {
     isCrit: boolean;
     damageType: DamageType;
     isHeal?: boolean;
+  };
+
+  // Expedition events
+  'expedition:launched': { runId: string; zoneId: string; tier: number; seed: number };
+  'expedition:roomEntered': { runId: string; roomId: string };
+  'expedition:roomCleared': { runId: string; roomId: string };
+  'expedition:progress': { runId: string; currentKills: number; requiredKills: number };
+  'expedition:checkpointUpdated': { runId: string; roomId: string };
+  'expedition:portalUsed': { runId: string; portalsRemaining: number };
+  'expedition:completed': {
+    runId: string;
+    durationSec: number;
+    rewards: ExpeditionRewardBreakdown;
+  };
+  'expedition:failed': { runId: string; reason: 'no_portals' | 'abandoned' };
+  'expedition:returnHub': {
+    runId: string;
+    outcome: 'completed' | 'failed' | 'abandoned';
   };
 };
 
