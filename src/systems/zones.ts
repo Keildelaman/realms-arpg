@@ -373,6 +373,7 @@ function onMonsterDied(data: {
   isBoss: boolean;
 }): void {
   const state = getState();
+  if (state.gameMode === 'expedition') return;
 
   // Increment kill count
   incrementZoneKills(state.activeZoneId);
@@ -438,6 +439,7 @@ export function init(): void {
 export function update(dt: number): void {
   const state = getState();
   if (state.isPaused) return;
+  if (state.gameMode === 'expedition') return;
 
   // Tick spawn timer
   spawnTimer += dt;
