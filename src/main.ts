@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene';
+import { HubScene } from './scenes/HubScene';
 import { GameScene } from './scenes/GameScene';
 import { UIScene } from './scenes/UIScene';
 import { GAME_WIDTH, GAME_HEIGHT } from './data/constants';
@@ -21,7 +22,7 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false,
     },
   },
-  scene: [BootScene, GameScene, UIScene],
+  scene: [BootScene, HubScene, GameScene, UIScene],
 };
 
 const game = new Phaser.Game(config);
@@ -36,6 +37,32 @@ if (typeof window !== 'undefined' && window.location.search.includes('test=1')) 
   game.events.once('ready', () => {
     import('./core/game-state').then(({ getState, getPlayer }) => {
       win.__GAME_STATE__ = { getState, getPlayer };
+    });
+
+    import('./systems/expeditions').then(({ init, launchExpedition }) => {
+      win.__GAME_ACTIONS__ = {
+        async launchTestExpedition() {
+          init();
+          const run = launchExpedition({
+            zoneId: 'whisperwood',
+            tier: 1,
+            objective: 'extermination',
+          });
+          if (!run) return false;
+
+          if (game.scene.isSleeping('GameScene')) {
+            game.scene.wake('GameScene');
+          } else if (!game.scene.isActive('GameScene')) {
+            game.scene.start('GameScene');
+          }
+
+          if (game.scene.isActive('HubScene')) {
+            game.scene.sleep('HubScene');
+          }
+
+          return true;
+        },
+      };
     });
   });
 }
