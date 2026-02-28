@@ -14,6 +14,7 @@ import { SKILLS } from '@/data/skills.data';
 // --- Layout constants (local to this component) ---
 const SKILL_ICON_SIZE = 60;
 const SKILL_BAR_PADDING = 8;
+const SLOT_KEY_LABELS = ['LMB', 'RMB', '1', '2', '3', '4'];
 
 interface SkillSlotDisplay {
   bg: Phaser.GameObjects.Graphics;
@@ -37,11 +38,11 @@ export class SkillBar extends Phaser.GameObjects.Container {
     this.setScrollFactor(0);
     this.setDepth(100);
 
-    // Calculate total bar width: 4 icons + 3 gaps
-    this.totalWidth = SKILL_ICON_SIZE * 4 + SKILL_BAR_PADDING * 3;
+    // Calculate total bar width: 6 icons + 5 gaps
+    this.totalWidth = SKILL_ICON_SIZE * 6 + SKILL_BAR_PADDING * 5;
 
-    // Create 4 skill slot displays
-    for (let i = 0; i < 4; i++) {
+    // Create 6 skill slot displays
+    for (let i = 0; i < 6; i++) {
       this.createSlot(i);
     }
 
@@ -76,11 +77,11 @@ export class SkillBar extends Phaser.GameObjects.Container {
     const activeBorder = this.scene.add.graphics();
     this.add(activeBorder);
 
-    // Key hint (1-4)
+    // Key hint (LMB, RMB, 1-4)
     const keyText = this.scene.add.text(
       x + 4,
       y + 2,
-      `${index + 1}`,
+      SLOT_KEY_LABELS[index],
       {
         fontFamily: 'monospace',
         fontSize: '12px',
@@ -158,7 +159,7 @@ export class SkillBar extends Phaser.GameObjects.Container {
     const player = getPlayer();
     const state = getState();
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 6; i++) {
       const slot = this.slots[i];
       const skillId = player.activeSkills[i];
       const x = this.getSlotX(i);

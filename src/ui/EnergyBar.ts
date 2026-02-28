@@ -1,10 +1,10 @@
 // ============================================================================
-// EnergyBar — Player energy bar below HP bar
+// EnergyBar — Player energy bar above HP bar (bottom-left, Diablo/PoE style)
 // ============================================================================
 
 import Phaser from 'phaser';
 import { getPlayer } from '@/core/game-state';
-import { COLORS } from '@/data/constants';
+import { COLORS, GAME_HEIGHT } from '@/data/constants';
 
 // --- Layout constants (local to this component) ---
 const ENERGY_BAR_WIDTH = 240;
@@ -20,10 +20,12 @@ export class EnergyBar extends Phaser.GameObjects.Container {
   private displayedRatio: number = 1;
 
   constructor(scene: Phaser.Scene) {
-    super(scene, 16, 46);
+    const h = scene.scale.height || GAME_HEIGHT;
+    super(scene, 16, h - 136);
     scene.add.existing(this);
     this.setScrollFactor(0);
     this.setDepth(100);
+    scene.scale.on('resize', this.onResize, this);
 
     // Background bar
     this.bg = scene.add.graphics();
@@ -104,5 +106,14 @@ export class EnergyBar extends Phaser.GameObjects.Container {
     this.energyText.setText(
       `${Math.floor(player.currentEnergy)} / ${player.maxEnergy}`
     );
+  }
+
+  private onResize = (gameSize: Phaser.Structs.Size): void => {
+    this.setPosition(16, gameSize.height - 136);
+  };
+
+  destroy(fromScene?: boolean): void {
+    this.scene.scale.off('resize', this.onResize, this);
+    super.destroy(fromScene);
   }
 }

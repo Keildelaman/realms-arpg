@@ -1,11 +1,11 @@
 // ============================================================================
-// HealthBar — Player HP bar at top-left of screen
+// HealthBar — Player HP bar at bottom-left of screen (Diablo/PoE style)
 // ============================================================================
 
 import Phaser from 'phaser';
 import { getPlayer } from '@/core/game-state';
 import { on } from '@/core/event-bus';
-import { COLORS } from '@/data/constants';
+import { COLORS, GAME_HEIGHT } from '@/data/constants';
 
 // --- Layout constants (local to this component) ---
 const HEALTH_BAR_WIDTH = 240;
@@ -25,10 +25,12 @@ export class HealthBar extends Phaser.GameObjects.Container {
   private pulsePhase: number = 0;
 
   constructor(scene: Phaser.Scene) {
-    super(scene, 16, 16);
+    const h = scene.scale.height || GAME_HEIGHT;
+    super(scene, 16, h - 112);
     scene.add.existing(this);
     this.setScrollFactor(0);
     this.setDepth(100);
+    scene.scale.on('resize', this.onResize, this);
 
     // Pulse glow (behind everything)
     this.pulseGlow = scene.add.graphics();
@@ -130,4 +132,13 @@ export class HealthBar extends Phaser.GameObjects.Container {
   private onDamaged = (): void => {
     this.flashTimer = 0.15;
   };
+
+  private onResize = (gameSize: Phaser.Structs.Size): void => {
+    this.setPosition(16, gameSize.height - 112);
+  };
+
+  destroy(fromScene?: boolean): void {
+    this.scene.scale.off('resize', this.onResize, this);
+    super.destroy(fromScene);
+  }
 }

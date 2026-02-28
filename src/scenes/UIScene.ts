@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
-import { getPlayer, getState } from '@/core/game-state';
-import { on } from '@/core/event-bus';
+import { getState } from '@/core/game-state';
+import { on, emit } from '@/core/event-bus';
 import { ZONES } from '@/data/zones.data';
+import * as expeditions from '@/systems/expeditions';
 
 // UI Components
 import { HealthBar } from '@/ui/HealthBar';
@@ -23,10 +24,23 @@ export class UIScene extends Phaser.Scene {
   private lootPopups!: LootPopupManager;
 
   // Info displays
-  private goldText!: Phaser.GameObjects.Text;
-  private levelText!: Phaser.GameObjects.Text;
   private zoneText!: Phaser.GameObjects.Text;
+  private objectiveText!: Phaser.GameObjects.Text;
+  private portalsText!: Phaser.GameObjects.Text;
   private fpsText!: Phaser.GameObjects.Text;
+
+  private leaveConfirmText!: Phaser.GameObjects.Text;
+  private resultToastText!: Phaser.GameObjects.Text;
+
+  private keyEsc!: Phaser.Input.Keyboard.Key;
+  private keyY!: Phaser.Input.Keyboard.Key;
+  private keyN!: Phaser.Input.Keyboard.Key;
+  private keyTab!: Phaser.Input.Keyboard.Key;
+
+  private controlsHint!: Phaser.GameObjects.Text;
+
+  private leaveConfirmVisible = false;
+  private resultToastTimer = 0;
 
   constructor() {
     super({ key: 'UIScene' });
@@ -59,23 +73,7 @@ export class UIScene extends Phaser.Scene {
     this.lootPopups = new LootPopupManager(this);
 
     // --- Info text ---
-    this.goldText = this.add.text(16, 72, '', {
-      fontFamily: 'monospace',
-      fontSize: '14px',
-      color: COLORS.gold,
-      stroke: '#000',
-      strokeThickness: 2,
-    }).setScrollFactor(0).setDepth(100);
-
-    this.levelText = this.add.text(16, 92, '', {
-      fontFamily: 'monospace',
-      fontSize: '13px',
-      color: COLORS.uiText,
-      stroke: '#000',
-      strokeThickness: 2,
-    }).setScrollFactor(0).setDepth(100);
-
-    this.zoneText = this.add.text(16, 110, '', {
+    this.zoneText = this.add.text(16, 16, '', {
       fontFamily: 'monospace',
       fontSize: '12px',
       color: COLORS.uiTextDim,
@@ -83,7 +81,23 @@ export class UIScene extends Phaser.Scene {
       strokeThickness: 2,
     }).setScrollFactor(0).setDepth(100);
 
-    this.fpsText = this.add.text(16, 130, '', {
+    this.objectiveText = this.add.text(16, 36, '', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#bae6fd',
+      stroke: '#000',
+      strokeThickness: 2,
+    }).setScrollFactor(0).setDepth(100);
+
+    this.portalsText = this.add.text(16, 56, '', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#fde68a',
+      stroke: '#000',
+      strokeThickness: 2,
+    }).setScrollFactor(0).setDepth(100);
+
+    this.fpsText = this.add.text(16, 76, '', {
       fontFamily: 'monospace',
       fontSize: '11px',
       color: '#666666',
@@ -91,9 +105,31 @@ export class UIScene extends Phaser.Scene {
       strokeThickness: 1,
     }).setScrollFactor(0).setDepth(100);
 
-    // --- Controls hint with dark background panel ---
+    this.leaveConfirmText = this.add.text(this.scale.width / 2, this.scale.height / 2, '', {
+      fontFamily: 'monospace',
+      fontSize: '18px',
+      color: '#f8fafc',
+      stroke: '#000000',
+      strokeThickness: 3,
+      backgroundColor: 'rgba(0,0,0,0.75)',
+      padding: { x: 12, y: 8 },
+      align: 'center',
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(300).setVisible(false);
+
+    this.resultToastText = this.add.text(this.scale.width / 2, 52, '', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#f8fafc',
+      stroke: '#000000',
+      strokeThickness: 2,
+      backgroundColor: 'rgba(0,0,0,0.55)',
+      padding: { x: 10, y: 4 },
+      align: 'center',
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(250).setVisible(false);
+
+    // --- Controls hint with dark background panel (expedition-only) ---
     const controlsText = 'WASD:Move  Mouse:Aim  LClick:Attack  1-4:Skills  Space:Dash  Tab:Inventory';
-    this.add.text(
+    this.controlsHint = this.add.text(
       this.scale.width / 2, 16,
       controlsText,
       {
@@ -107,15 +143,66 @@ export class UIScene extends Phaser.Scene {
       },
     ).setOrigin(0.5, 0).setScrollFactor(0).setDepth(100);
 
+    this.keyEsc = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+    this.keyY = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Y);
+    this.keyN = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.N);
+    this.keyTab = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TAB);
+
+    this.keyTab.on('down', () => {
+      emit('ui:inventoryToggle');
+    });
+
+    this.keyEsc.on('down', () => {
+      const state = getState();
+      if (state.gameMode !== 'expedition') return;
+      if (state.inventoryOpen) {
+        emit('ui:inventoryToggle');
+        return;
+      }
+      this.leaveConfirmVisible = !this.leaveConfirmVisible;
+      this.syncLeaveConfirm();
+    });
+
+    this.keyY.on('down', () => {
+      if (!this.leaveConfirmVisible) return;
+      this.leaveConfirmVisible = false;
+      this.syncLeaveConfirm();
+      expeditions.abandonActiveExpedition();
+    });
+
+    this.keyN.on('down', () => {
+      if (!this.leaveConfirmVisible) return;
+      this.leaveConfirmVisible = false;
+      this.syncLeaveConfirm();
+    });
+
     // --- Event listeners ---
     on('zone:entered', () => {
       this.updateZoneText();
+    });
+
+    on('expedition:completed', (data) => {
+      const totalXP = data.rewards.completionXP + data.rewards.firstClearXPBonus;
+      const totalGold = data.rewards.completionGold + data.rewards.firstClearGoldBonus;
+      this.showResultToast(`Expedition Complete  +${totalXP} XP  +${totalGold} Gold`);
+    });
+
+    on('expedition:failed', (data) => {
+      if (data.reason === 'no_portals') {
+        this.showResultToast('Expedition Failed: No portals remaining');
+      } else {
+        this.showResultToast('Expedition Abandoned');
+      }
+    });
+
+    on('expedition:returnHub', () => {
+      this.leaveConfirmVisible = false;
+      this.syncLeaveConfirm();
     });
   }
 
   update(_time: number, delta: number): void {
     const dt = delta / 1000;
-    const player = getPlayer();
     const state = getState();
 
     // Update HUD components
@@ -125,11 +212,18 @@ export class UIScene extends Phaser.Scene {
     this.skillBar.update(dt);
     this.minimap.update(dt);
     this.inventoryPanel.update(dt);
+    this.controlsHint.setVisible(state.gameMode === 'expedition');
 
-    // Update info text
-    this.goldText.setText(`Gold: ${player.gold}`);
-    this.levelText.setText(`Lv.${player.level}  ATK:${player.attack}  DEF:${player.defense}  SPD:${Math.floor(player.moveSpeed)}`);
     this.updateZoneText();
+    this.updateExpeditionHud();
+
+    if (this.resultToastTimer > 0) {
+      this.resultToastTimer -= dt;
+      if (this.resultToastTimer <= 0) {
+        this.resultToastTimer = 0;
+        this.resultToastText.setVisible(false);
+      }
+    }
 
     // FPS counter
     const fps = Math.round(this.game.loop.actualFps);
@@ -140,10 +234,54 @@ export class UIScene extends Phaser.Scene {
 
   private updateZoneText(): void {
     const state = getState();
+
+    if (state.gameMode === 'hub') {
+      this.zoneText.setText('Hub: Haven');
+      return;
+    }
+
+    const run = state.activeExpedition;
+    if (run) {
+      const zone = ZONES[run.zoneId];
+      this.zoneText.setText(`${zone?.name ?? run.zoneId} (T${run.tier})`);
+      return;
+    }
+
     const zone = ZONES[state.activeZoneId];
     if (zone) {
       const kills = state.zoneKillCounts[state.activeZoneId] || 0;
-      this.zoneText.setText(`${zone.name} (T${zone.tier}) — Kills: ${kills}/${zone.bossUnlockKills}`);
+      this.zoneText.setText(`${zone.name} (T${zone.tier}) - Kills: ${kills}/${zone.bossUnlockKills}`);
     }
+  }
+
+  private updateExpeditionHud(): void {
+    const state = getState();
+    if (state.gameMode !== 'expedition' || !state.activeExpedition) {
+      this.objectiveText.setText('');
+      this.portalsText.setText('');
+      return;
+    }
+
+    const run = state.activeExpedition;
+    this.objectiveText.setText(`Extermination: ${run.progress.currentKills}/${run.progress.requiredKills}`);
+    this.portalsText.setText(`Portals: ${run.portalsRemaining}/${run.maxPortals}`);
+    this.syncLeaveConfirm();
+  }
+
+  private syncLeaveConfirm(): void {
+    if (!this.leaveConfirmVisible || getState().gameMode !== 'expedition') {
+      this.leaveConfirmText.setVisible(false);
+      return;
+    }
+
+    this.leaveConfirmText
+      .setVisible(true)
+      .setText('Leave Expedition?\nY: Confirm  |  N or ESC: Cancel');
+  }
+
+  private showResultToast(text: string): void {
+    this.resultToastText.setText(text);
+    this.resultToastText.setVisible(true);
+    this.resultToastTimer = 4;
   }
 }
