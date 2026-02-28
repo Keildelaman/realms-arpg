@@ -1,7 +1,12 @@
 import { test, expect } from '../fixtures/game.fixture';
-import { getPlayerData, getAliveMonsterCount } from '../helpers/game-state';
+import { getPlayerData, getAliveMonsterCount, launchTestExpedition } from '../helpers/game-state';
 
 test.describe('Combat', () => {
+  test.beforeEach(async ({ gamePage }) => {
+    await launchTestExpedition(gamePage);
+    await gamePage.waitForTimeout(800);
+  });
+
   test('player starts with expected stats', async ({ gamePage }) => {
     const player = await getPlayerData(gamePage);
     expect(player.currentHP).toBeGreaterThan(0);

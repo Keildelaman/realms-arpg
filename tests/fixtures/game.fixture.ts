@@ -10,6 +10,11 @@ async function waitForGame(page: Page): Promise<void> {
     () => (window as Record<string, unknown>).__GAME_STATE__ !== undefined,
     { timeout: 15_000 },
   );
+
+  await page.waitForFunction(
+    () => (window as Record<string, unknown>).__GAME_ACTIONS__ !== undefined,
+    { timeout: 15_000 },
+  );
 }
 
 export const test = base.extend<{ gamePage: Page }>({

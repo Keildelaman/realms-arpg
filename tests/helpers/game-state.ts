@@ -5,6 +5,10 @@ interface GameStateHelpers {
   getPlayer: () => unknown;
 }
 
+interface GameActions {
+  launchTestExpedition: () => Promise<boolean>;
+}
+
 /** Retrieve player data from the game running in the browser. */
 export async function getPlayerData(page: Page): Promise<Record<string, unknown>> {
   return page.evaluate(() => {
@@ -32,4 +36,17 @@ export async function getAliveMonsterCount(page: Page): Promise<number> {
     const state = helpers.getState() as { monsters: Array<{ isDead: boolean }> };
     return state.monsters.filter(m => !m.isDead).length;
   });
+}
+
+/** Launch a default expedition for gameplay tests. */
+export async function launchTestExpedition(page: Page): Promise<void> {
+  const launched = await page.evaluate(async () => {
+    const actions = (window as Record<string, unknown>).__GAME_ACTIONS__ as GameActions | undefined;
+    if (!actions) throw new Error('Game actions not exposed');
+    return actions.launchTestExpedition();
+  });
+
+  if (!launched) {
+    throw new Error('Failed to launch test expedition');
+  }
 }

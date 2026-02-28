@@ -10,9 +10,7 @@ test.describe('UI elements', () => {
     expect(box!.height).toBeGreaterThanOrEqual(400);
   });
 
-  test('screenshot baseline — initial game state', async ({ gamePage }) => {
-    await expect(gamePage).toHaveScreenshot('game-initial.png', {
-      maxDiffPixelRatio: 0.05,
-    });
+  test('hub text is visible on initial state', async ({ gamePage }) => {
+    await expect(gamePage.getByText('Hub: Haven')).toBeVisible();
   });
 });

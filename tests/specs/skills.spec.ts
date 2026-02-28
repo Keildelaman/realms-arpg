@@ -1,12 +1,18 @@
 import { test, expect } from '../fixtures/game.fixture';
-import { getPlayerData } from '../helpers/game-state';
+import { getPlayerData, launchTestExpedition } from '../helpers/game-state';
 
 test.describe('Skills', () => {
-  test('heavy_slash and shadow_step are auto-equipped', async ({ gamePage }) => {
+  test.beforeEach(async ({ gamePage }) => {
+    await launchTestExpedition(gamePage);
+    await gamePage.waitForTimeout(800);
+  });
+
+  test('basic_attack, heavy_slash and shadow_step are auto-equipped', async ({ gamePage }) => {
     const player = await getPlayerData(gamePage);
     const skills = player.activeSkills as (string | null)[];
-    expect(skills[0]).toBe('heavy_slash');
-    expect(skills[3]).toBe('shadow_step');
+    expect(skills[0]).toBe('basic_attack');
+    expect(skills[2]).toBe('heavy_slash');
+    expect(skills[5]).toBe('shadow_step');
   });
 
   test('pressing 1 activates heavy slash without crashing', async ({ gamePage }) => {
