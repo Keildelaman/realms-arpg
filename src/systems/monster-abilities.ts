@@ -12,6 +12,7 @@ import { on, emit } from '@/core/event-bus';
 import { getState, getPlayer, getMonsterById } from '@/core/game-state';
 import { getMonsterAbility } from '@/data/monster-abilities.data';
 import { getMonsterDefinition } from '@/systems/zones';
+import { safeResolvePosition } from './expedition-generation';
 
 // --- Internal state ---
 
@@ -198,8 +199,19 @@ function fireAbility(monster: MonsterInstance, ability: MonsterAbilityDef): void
 
   // Dash to target if applicable (e.g., leaping_strike)
   if (ability.dashToTarget) {
-    monster.x = monster.abilityTargetX;
-    monster.y = monster.abilityTargetY;
+    const state = getState();
+    if (state.activeExpedition) {
+      const resolved = safeResolvePosition(
+        state.activeExpedition.map, monster.x, monster.y,
+        monster.abilityTargetX, monster.abilityTargetY,
+        Math.max(10, monster.size * 0.35),
+      );
+      monster.x = resolved.x;
+      monster.y = resolved.y;
+    } else {
+      monster.x = monster.abilityTargetX;
+      monster.y = monster.abilityTargetY;
+    }
   }
 
   // Projectile abilities

@@ -38,6 +38,13 @@ export class MonsterEntity {
   private isKnockedBack: boolean = false;
   private impactScaleTween: Phaser.Tweens.Tween | null = null;
 
+  // Animation state
+  private prevX: number = 0;
+  private prevY: number = 0;
+  private animTimer: number = 0;
+  private isMoving: boolean = false;
+  private stopSquashTimer: number = 0;
+
   constructor(scene: Phaser.Scene, monster: MonsterInstance) {
     this.scene = scene;
     this.monsterId = monster.id;
@@ -145,6 +152,10 @@ export class MonsterEntity {
     // Draw initial HP bar
     this.drawHPBar(monster);
 
+    // Init animation tracking
+    this.prevX = monster.x;
+    this.prevY = monster.y;
+
     // Listen for knockback events
     on('combat:knockback', this.onKnockback);
   }
@@ -217,25 +228,98 @@ export class MonsterEntity {
       this.sprite.setTint(0xffaa00);
     }
 
+    // --- Animation system ---
+    this.animTimer += dt;
+    const baseScale = monster.isBoss ? 1.3 : 1.0;
+
+    // Detect movement
+    const dx = monster.x - this.prevX;
+    const dy = monster.y - this.prevY;
+    const speed = Math.sqrt(dx * dx + dy * dy) / Math.max(dt, 0.001);
+    const wasMoving = this.isMoving;
+    this.isMoving = speed > 5;
+    this.prevX = monster.x;
+    this.prevY = monster.y;
+
+    // Stop squash timer
+    if (wasMoving && !this.isMoving) {
+      this.stopSquashTimer = 0.1;
+    }
+    if (this.stopSquashTimer > 0) {
+      this.stopSquashTimer -= dt;
+    }
+
     // Windup indicator for all monsters
     const isFrozen = monster.statusEffects.some(e => e.type === 'freeze');
     if (monster.isWindingUp && !isFrozen) {
       this.showWindupIndicator(monster);
-      const baseScale = monster.isBoss ? 1.3 : 1.0;
       this.sprite.setScale(baseScale * 1.15);
       if (this.hitFlashTimer <= 0) {
         this.sprite.setTint(0xff4444);
       }
-    } else {
+    } else if (monster.currentAbility !== null) {
+      // Casting animation: rhythmic pulse
       if (this.windupIndicator) {
         this.windupIndicator.destroy();
         this.windupIndicator = null;
       }
-      const sizeMult = monster.rarity === 'rare' ? 1.3 : monster.rarity === 'magic' ? 1.15 : 1.0;
-      const baseScale = monster.isBoss ? 1.3 : 1.0;
-      const displaySize = monster.size * sizeMult * baseScale;
-      this.sprite.setDisplaySize(displaySize, displaySize);
-      this.sprite.setScale(baseScale);
+      const castPulse = 1.0 + Math.sin(this.animTimer * 25) * 0.06;
+      this.sprite.setScale(baseScale * castPulse, baseScale * castPulse);
+      // Hexagon: slow rotation during cast
+      if (monster.shape === 'hexagon') {
+        this.sprite.setRotation(this.animTimer * 1.5);
+      }
+    } else if (this.isMoving) {
+      // Movement animation: stretch in movement direction
+      if (this.windupIndicator) {
+        this.windupIndicator.destroy();
+        this.windupIndicator = null;
+      }
+      const stretchX = baseScale + 0.06;
+      const stretchY = baseScale - 0.03;
+      this.sprite.setScale(stretchX, stretchY);
+
+      // Triangle: lean forward in movement direction
+      if (monster.shape === 'triangle' && speed > 10) {
+        const moveAngle = Math.atan2(dy, dx);
+        this.sprite.setRotation(moveAngle + Math.PI / 2);
+      } else {
+        this.sprite.setRotation(0);
+      }
+    } else if (this.stopSquashTimer > 0) {
+      // Stop squash
+      if (this.windupIndicator) {
+        this.windupIndicator.destroy();
+        this.windupIndicator = null;
+      }
+      const squashProgress = this.stopSquashTimer / 0.1;
+      const squashX = baseScale + 0.05 * squashProgress;
+      const squashY = baseScale - 0.04 * squashProgress;
+      this.sprite.setScale(squashX, squashY);
+      this.sprite.setRotation(0);
+    } else {
+      // Idle breathing animation
+      if (this.windupIndicator) {
+        this.windupIndicator.destroy();
+        this.windupIndicator = null;
+      }
+      // Breathing frequency varies by shape
+      const breatheFreq = monster.shape === 'hexagon' ? 1.2
+        : monster.shape === 'triangle' ? 2.2
+        : monster.shape === 'diamond' ? 1.6
+        : 1.8;
+      const breathePhase = Math.sin(this.animTimer * breatheFreq * Math.PI * 2);
+      const scaleX = baseScale - breathePhase * 0.015;
+      const scaleY = baseScale + breathePhase * 0.03;
+      this.sprite.setScale(scaleX, scaleY);
+
+      // Diamond: subtle hover bob
+      if (monster.shape === 'diamond') {
+        const bobOffset = Math.sin(this.animTimer * 2.5) * 2;
+        this.sprite.setPosition(monster.x, monster.y + bobOffset);
+      }
+
+      this.sprite.setRotation(0);
     }
   }
 

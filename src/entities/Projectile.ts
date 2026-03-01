@@ -105,10 +105,21 @@ export class Projectile {
 
     // Check if out of world bounds
     const state = getState();
-    if (
-      this.data.x < -50 || this.data.y < -50 ||
-      this.data.x > 2500 || this.data.y > 2500
-    ) {
+    const run = state.activeExpedition;
+    let outOfBounds = false;
+    if (run) {
+      const g = run.map.grid;
+      const minX = g.originX - 50;
+      const minY = g.originY - 50;
+      const maxX = g.originX + g.width * g.cellSize + 50;
+      const maxY = g.originY + g.height * g.cellSize + 50;
+      outOfBounds = this.data.x < minX || this.data.y < minY ||
+                    this.data.x > maxX || this.data.y > maxY;
+    } else {
+      outOfBounds = this.data.x < -100 || this.data.y < -100 ||
+                    this.data.x > 2500 || this.data.y > 2500;
+    }
+    if (outOfBounds) {
       this.data.isExpired = true;
       emit('projectile:expired', { projectileId: this.data.id });
     }

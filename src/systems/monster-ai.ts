@@ -14,7 +14,7 @@ import {
   getMonsterById,
 } from '@/core/game-state';
 import { ZONES } from '@/data/zones.data';
-import { resolveMovementAgainstMap } from './expedition-generation';
+import { resolveMovementAgainstMap, isPointWalkable, safeResolvePosition } from './expedition-generation';
 import { updateAbilities, cancelAbility } from './monster-abilities';
 import {
   SLOW_SPEED_REDUCTION,
@@ -46,22 +46,20 @@ import {
   AFFIX_FRENZY_AURA_RADIUS,
   AFFIX_FRENZY_DAMAGE_MULT,
   AFFIX_FRENZY_ATTACK_SPEED_MULT,
+  MONSTER_WANDER_RADIUS,
+  MONSTER_WANDER_SPEED_RATIO,
+  MONSTER_WANDER_PAUSE_MIN,
+  MONSTER_WANDER_PAUSE_MAX,
+  MONSTER_WANDER_ARRIVAL_DIST,
 } from '@/data/constants';
 import { getMonsterDefinition } from '@/systems/zones';
 
 // --- Constants ---
 
 const LEASH_MULTIPLIER = 1.5;
-const IDLE_WANDER_MIN = 2.0;
-const IDLE_WANDER_MAX = 5.0;
-const IDLE_WANDER_DISTANCE = 60;
 const SEPARATION_RADIUS = 24;
 const SEPARATION_FORCE = 80;
 const FLEE_DURATION = 3.0;
-
-// --- Internal state ---
-
-const wanderTimers: Map<string, number> = new Map();
 
 // --- Main AI dispatch ---
 
@@ -78,6 +76,19 @@ export function updateMonster(
   if (monster.isDead) {
     monster.deathTimer -= dt;
     return;
+  }
+
+  // Stuck recovery: if monster is somehow in an unwalkable cell, snap to nearest walkable
+  const state = getState();
+  if (state.activeExpedition) {
+    const r = Math.max(10, monster.size * 0.35);
+    if (!isPointWalkable(state.activeExpedition.map, monster.x, monster.y, r)) {
+      const safe = safeResolvePosition(
+        state.activeExpedition.map, monster.x, monster.y, monster.x, monster.y, r,
+      );
+      monster.x = safe.x;
+      monster.y = safe.y;
+    }
   }
 
   // Check status effects
@@ -672,23 +683,64 @@ function updateIdle(
   const distToPlayer = dist(monster.x, monster.y, playerX, playerY);
 
   if (distToPlayer <= monster.aggroRange) {
+    // Clear wander state on aggro
+    monster.wanderTargetX = undefined;
+    monster.wanderTargetY = undefined;
     transitionTo(monster, 'chase');
     return;
   }
 
-  // Wander
-  let timer = wanderTimers.get(monster.id) ?? randomRange(IDLE_WANDER_MIN, IDLE_WANDER_MAX);
-  timer -= dt;
-
-  if (timer <= 0) {
-    const angle = Math.random() * Math.PI * 2;
-    monster.targetX = monster.x + Math.cos(angle) * IDLE_WANDER_DISTANCE;
-    monster.targetY = monster.y + Math.sin(angle) * IDLE_WANDER_DISTANCE;
-    moveToward(monster, monster.targetX, monster.targetY, monster.moveSpeed * 0.3, dt);
-    timer = randomRange(IDLE_WANDER_MIN, IDLE_WANDER_MAX);
+  // Pausing between wander movements
+  if (monster.wanderPauseTimer > 0) {
+    monster.wanderPauseTimer -= dt;
+    return;
   }
 
-  wanderTimers.set(monster.id, timer);
+  // Pick a new wander target if we don't have one
+  if (monster.wanderTargetX === undefined || monster.wanderTargetY === undefined) {
+    pickNewWanderTarget(monster);
+    return;
+  }
+
+  // Move toward current wander target
+  const wanderDist = dist(monster.x, monster.y, monster.wanderTargetX, monster.wanderTargetY);
+
+  if (wanderDist <= MONSTER_WANDER_ARRIVAL_DIST) {
+    // Arrived — pause then pick another target
+    monster.wanderTargetX = undefined;
+    monster.wanderTargetY = undefined;
+    monster.wanderPauseTimer = randomRange(MONSTER_WANDER_PAUSE_MIN, MONSTER_WANDER_PAUSE_MAX);
+    return;
+  }
+
+  const wanderSpeed = monster.moveSpeed * MONSTER_WANDER_SPEED_RATIO;
+  moveToward(monster, monster.wanderTargetX, monster.wanderTargetY, wanderSpeed, dt);
+}
+
+function pickNewWanderTarget(monster: MonsterInstance): void {
+  const state = getState();
+  const maxAttempts = 5;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = MONSTER_WANDER_RADIUS * (0.3 + Math.random() * 0.7);
+    const tx = monster.spawnX + Math.cos(angle) * radius;
+    const ty = monster.spawnY + Math.sin(angle) * radius;
+
+    // In expedition mode, validate the target is walkable
+    if (state.activeExpedition) {
+      if (!isPointWalkable(state.activeExpedition.map, tx, ty, Math.max(10, monster.size * 0.35))) {
+        continue;
+      }
+    }
+
+    monster.wanderTargetX = tx;
+    monster.wanderTargetY = ty;
+    return;
+  }
+
+  // If all attempts failed, just pause and try again later
+  monster.wanderPauseTimer = randomRange(MONSTER_WANDER_PAUSE_MIN, MONSTER_WANDER_PAUSE_MAX);
 }
 
 function updateFlee(
@@ -787,9 +839,35 @@ function tickTeleport(
     // Teleport to a random position near the player
     const fromX = monster.x;
     const fromY = monster.y;
-    const angle = Math.random() * Math.PI * 2;
-    monster.x = playerX + Math.cos(angle) * AFFIX_TELEPORT_OFFSET;
-    monster.y = playerY + Math.sin(angle) * AFFIX_TELEPORT_OFFSET;
+    const state = getState();
+    const monsterRadius = Math.max(10, monster.size * 0.35);
+    let teleportX: number | null = null;
+    let teleportY: number | null = null;
+
+    // Try up to 5 positions, validate walkability in expeditions
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const offset = AFFIX_TELEPORT_OFFSET * (1 - attempt * 0.15);
+      const tx = playerX + Math.cos(angle) * offset;
+      const ty = playerY + Math.sin(angle) * offset;
+
+      if (state.activeExpedition) {
+        if (isPointWalkable(state.activeExpedition.map, tx, ty, monsterRadius)) {
+          teleportX = tx;
+          teleportY = ty;
+          break;
+        }
+      } else {
+        teleportX = tx;
+        teleportY = ty;
+        break;
+      }
+    }
+
+    if (teleportX === null || teleportY === null) return; // skip if no valid position
+
+    monster.x = teleportX;
+    monster.y = teleportY;
 
     emit('affix:teleport', {
       monsterId: monster.id,
@@ -867,6 +945,9 @@ function transitionTo(monster: MonsterInstance, newState: MonsterAIState): void 
 // --- Monster separation ---
 
 function applySeparation(monsters: MonsterInstance[], dt: number): void {
+  const st = getState();
+  const map = st.activeExpedition?.map ?? null;
+
   for (let i = 0; i < monsters.length; i++) {
     const a = monsters[i];
     if (a.isDead) continue;
@@ -894,13 +975,27 @@ function applySeparation(monsters: MonsterInstance[], dt: number): void {
         sepX += normX * push * 0.5;
         sepY += normY * push * 0.5;
 
+        // Push monster b, revert if it lands in a wall
+        const prevBx = b.x;
+        const prevBy = b.y;
         b.x -= normX * push * 0.5;
         b.y -= normY * push * 0.5;
+        if (map && !isPointWalkable(map, b.x, b.y, Math.max(10, b.size * 0.35))) {
+          b.x = prevBx;
+          b.y = prevBy;
+        }
       }
     }
 
+    // Push monster a, revert if it lands in a wall
+    const prevAx = a.x;
+    const prevAy = a.y;
     a.x += sepX;
     a.y += sepY;
+    if (map && !isPointWalkable(map, a.x, a.y, Math.max(10, a.size * 0.35))) {
+      a.x = prevAx;
+      a.y = prevAy;
+    }
   }
 }
 
@@ -1091,8 +1186,6 @@ function onMonsterDied(data: {
   monster.isCharging = false;
   monster.isFused = false;
 
-  wanderTimers.delete(data.monsterId);
-
   // Exploder detonateOnDeath: half-damage AoE without re-emitting monster:died
   if (monster.archetype === 'exploder') {
     const def = getMonsterDefinition(monster.definitionId);
@@ -1127,8 +1220,6 @@ function onMonsterDied(data: {
 // --- Lifecycle ---
 
 export function init(): void {
-  wanderTimers.clear();
-
   on('monster:died', onMonsterDied);
 }
 

@@ -29,6 +29,8 @@ import {
   SHIELD_PERCENT_DEFAULT,
   SHIELD_DAMAGE_REDUCTION,
   RARE_MINION_SPAWN_RADIUS,
+  MONSTER_WANDER_PAUSE_MIN,
+  MONSTER_WANDER_PAUSE_MAX,
 } from '@/data/constants';
 import {
   rollMonsterRarity,
@@ -289,6 +291,10 @@ function createMonsterInstance(
 
     x,
     y,
+
+    spawnX: x,
+    spawnY: y,
+    wanderPauseTimer: MONSTER_WANDER_PAUSE_MIN + Math.random() * (MONSTER_WANDER_PAUSE_MAX - MONSTER_WANDER_PAUSE_MIN),
 
     statusEffects: [],
 
