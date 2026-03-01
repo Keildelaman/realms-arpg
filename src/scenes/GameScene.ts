@@ -51,6 +51,7 @@ export class GameScene extends Phaser.Scene {
   private expeditionWallGroup: Phaser.Physics.Arcade.StaticGroup | null = null;
   private expeditionWallObjects: Phaser.GameObjects.Rectangle[] = [];
   private activeTelegraphs: Map<string, { graphics: Phaser.GameObjects.Graphics; duration: number; elapsed: number; radius?: number }> = new Map();
+  private targetIndicator: Phaser.GameObjects.Graphics | null = null;
 
   // Input
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -58,8 +59,12 @@ export class GameScene extends Phaser.Scene {
   private keyA!: Phaser.Input.Keyboard.Key;
   private keyS!: Phaser.Input.Keyboard.Key;
   private keyD!: Phaser.Input.Keyboard.Key;
+  private keyE!: Phaser.Input.Keyboard.Key;
   private keySpace!: Phaser.Input.Keyboard.Key;
   private skillKeys!: Phaser.Input.Keyboard.Key[];
+  private extractionPortalGraphics: Phaser.GameObjects.Graphics | null = null;
+  private extractionPromptText: Phaser.GameObjects.Text | null = null;
+  private chestGraphicsById: Map<string, Phaser.GameObjects.Graphics> = new Map();
 
   constructor() {
     super({ key: 'GameScene' });
@@ -126,6 +131,7 @@ export class GameScene extends Phaser.Scene {
     this.keyA = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A);
     this.keyS = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S);
     this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D);
+    this.keyE = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
     this.keySpace = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.skillKeys = [
       this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ONE),
@@ -146,6 +152,8 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (pointer.rightButtonDown()) {
         this.activateSlotSkill(1);
+      } else if (pointer.leftButtonDown()) {
+        this.handleLeftClickTarget(pointer);
       }
     });
 
@@ -168,6 +176,13 @@ export class GameScene extends Phaser.Scene {
           entity.destroy();
           this.monsterEntities.delete(data.monsterId);
         });
+      }
+
+      // Auto-clear target if focused monster died
+      const state = getState();
+      if (state.player.targetMonsterId === data.monsterId) {
+        state.player.targetMonsterId = null;
+        emit('player:targetChanged', { monsterId: null });
       }
     });
 
@@ -228,10 +243,14 @@ export class GameScene extends Phaser.Scene {
     on('expedition:launched', () => {
       this.refreshWorldFromState();
       this.clearAllEntities();
+      this.clearExtractionPortalVisuals();
+      this.clearChestVisuals();
     });
 
     on('expedition:returnHub', () => {
       this.clearAllEntities();
+      this.clearExtractionPortalVisuals();
+      this.clearChestVisuals();
       if (this.expeditionGeometry) {
         this.expeditionGeometry.destroy();
         this.expeditionGeometry = null;
@@ -250,6 +269,10 @@ export class GameScene extends Phaser.Scene {
     on('player:died', () => {
       // Brief pause, then respawn
       this.cameras.main.flash(500, 255, 0, 0);
+    });
+
+    on('expedition:readyToExtract', () => {
+      this.ensureExtractionPortalVisuals();
     });
 
     // --- Telegraph rendering ---
@@ -471,9 +494,13 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    // --- Target indicator ---
+    this.updateTargetIndicator();
+
     // --- World-space UI ---
     this.damageNumbers.update(dt);
     this.statusIcons.update(dt);
+    this.updateExpeditionInteractables(dt);
   }
 
   private activateSlotSkill(slotIndex: number): void {
@@ -537,6 +564,272 @@ export class GameScene extends Phaser.Scene {
     this.lootSprites.set(itemId, sprite);
   }
 
+  private ensureExtractionPortalVisuals(): void {
+    if (!this.extractionPortalGraphics) {
+      this.extractionPortalGraphics = this.add.graphics().setDepth(6);
+    }
+    if (!this.extractionPromptText) {
+      this.extractionPromptText = this.add.text(0, 0, '', {
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        color: '#d1fae5',
+        stroke: '#000000',
+        strokeThickness: 2,
+        backgroundColor: 'rgba(0,0,0,0.45)',
+        padding: { x: 8, y: 4 },
+      })
+        .setScrollFactor(0)
+        .setDepth(120)
+        .setVisible(false);
+    }
+  }
+
+  private rarityToChestColors(rarity: string): { base: number; trim: number; glow: number } {
+    if (rarity === 'legendary') return { base: 0x8a4f00, trim: 0xf59e0b, glow: 0xfbbf24 };
+    if (rarity === 'epic') return { base: 0x4c2a78, trim: 0xc084fc, glow: 0xe9d5ff };
+    if (rarity === 'rare') return { base: 0x1f4f87, trim: 0x60a5fa, glow: 0xbfdbfe };
+    if (rarity === 'uncommon') return { base: 0x1f5d37, trim: 0x4ade80, glow: 0xbbf7d0 };
+    return { base: 0x4a3f32, trim: 0xb0b0b0, glow: 0xd4d4d4 };
+  }
+
+  private clearChestVisuals(): void {
+    for (const [, gfx] of this.chestGraphicsById) {
+      gfx.destroy();
+    }
+    this.chestGraphicsById.clear();
+  }
+
+  private updateChestVisuals(): void {
+    const chests = expeditions.getActiveChests();
+    const activeIds = new Set(chests.map(c => c.id));
+    const pulse = 0.72 + 0.28 * Math.sin(this.time.now * 0.005);
+
+    for (const chest of chests) {
+      let gfx = this.chestGraphicsById.get(chest.id);
+      if (!gfx) {
+        gfx = this.add.graphics().setDepth(7);
+        this.chestGraphicsById.set(chest.id, gfx);
+      }
+
+      const colors = this.rarityToChestColors(chest.rarity);
+      const w = 32;
+      const h = 22;
+      const lidH = 9;
+      const x = chest.x - w * 0.5;
+      const y = chest.y - h * 0.5;
+
+      gfx.clear();
+
+      // Subtle rarity aura.
+      gfx.fillStyle(colors.glow, 0.12 * pulse);
+      gfx.fillCircle(chest.x, chest.y, 26 + 3 * pulse);
+
+      // Chest body.
+      gfx.fillStyle(colors.base, 1);
+      gfx.fillRoundedRect(x, y + lidH, w, h - lidH, 3);
+      gfx.fillStyle(colors.trim, 0.9);
+      gfx.fillRoundedRect(x, y, w, lidH, 3);
+
+      // Hinges / lock accents.
+      gfx.fillStyle(colors.trim, 0.8);
+      gfx.fillRect(chest.x - 3, y + lidH + 4, 6, 6);
+      gfx.fillRect(x + 5, y + 3, 4, 3);
+      gfx.fillRect(x + w - 9, y + 3, 4, 3);
+
+      if (chest.source === 'completion') {
+        gfx.lineStyle(2, colors.glow, 0.45 + 0.35 * pulse);
+        gfx.strokeCircle(chest.x, chest.y, 22 + 2 * pulse);
+      }
+    }
+
+    for (const [id, gfx] of this.chestGraphicsById) {
+      if (!activeIds.has(id)) {
+        gfx.destroy();
+        this.chestGraphicsById.delete(id);
+      }
+    }
+  }
+
+  private clearExtractionPortalVisuals(): void {
+    if (this.extractionPortalGraphics) {
+      this.extractionPortalGraphics.destroy();
+      this.extractionPortalGraphics = null;
+    }
+    if (this.extractionPromptText) {
+      this.extractionPromptText.destroy();
+      this.extractionPromptText = null;
+    }
+  }
+
+  private updateExpeditionInteractables(_dt: number): void {
+    this.updateChestVisuals();
+    this.ensureExtractionPortalVisuals();
+    if (!this.extractionPromptText) return;
+
+    const player = getPlayer();
+    const pressedInteract = Phaser.Input.Keyboard.JustDown(this.keyE);
+    const openableChests = expeditions.getActiveChests();
+    let nearestChest: (typeof openableChests)[number] | null = null;
+    let nearestChestDistSq = Infinity;
+    for (const chest of openableChests) {
+      const dx = player.x - chest.x;
+      const dy = player.y - chest.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq <= chest.interactRadius * chest.interactRadius && distSq < nearestChestDistSq) {
+        nearestChestDistSq = distSq;
+        nearestChest = chest;
+      }
+    }
+
+    if (nearestChest) {
+      if (pressedInteract) {
+        expeditions.openChest(nearestChest.id);
+      }
+      const rarityLabel = nearestChest.rarity.charAt(0).toUpperCase() + nearestChest.rarity.slice(1);
+      this.extractionPromptText.setVisible(true);
+      this.extractionPromptText.setText(`Press E: Open ${rarityLabel} Chest`);
+      this.extractionPromptText.setPosition(
+        (this.scale.width - this.extractionPromptText.width) * 0.5,
+        26,
+      );
+    } else {
+      this.extractionPromptText.setVisible(false);
+    }
+
+    const portal = expeditions.getExtractionPortalPosition();
+    if (!portal) {
+      if (this.extractionPortalGraphics) {
+        this.extractionPortalGraphics.clear();
+      }
+      return;
+    }
+
+    if (!this.extractionPortalGraphics) return;
+
+    const t = this.time.now * 0.0018;
+    const pulse = 0.75 + 0.25 * Math.sin(this.time.now * 0.006);
+    const innerR = 24 + Math.sin(this.time.now * 0.004) * 3;
+    const outerR = 44 + Math.cos(this.time.now * 0.003) * 4;
+
+    this.extractionPortalGraphics.clear();
+    this.extractionPortalGraphics.lineStyle(3, 0x2dd4bf, 0.9 * pulse);
+    this.extractionPortalGraphics.strokeCircle(portal.x, portal.y, outerR);
+    this.extractionPortalGraphics.lineStyle(2, 0x5eead4, 0.8);
+    this.extractionPortalGraphics.strokeCircle(portal.x, portal.y, innerR);
+    this.extractionPortalGraphics.fillStyle(0x0f766e, 0.16);
+    this.extractionPortalGraphics.fillCircle(portal.x, portal.y, innerR - 4);
+
+    for (let i = 0; i < 6; i++) {
+      const a = t + (i / 6) * Math.PI * 2;
+      const rx = portal.x + Math.cos(a) * (outerR - 2);
+      const ry = portal.y + Math.sin(a) * (outerR - 2);
+      this.extractionPortalGraphics.fillStyle(0x99f6e4, 0.7);
+      this.extractionPortalGraphics.fillCircle(rx, ry, 2);
+    }
+
+    const canUse = expeditions.canUseExtractionPortal(player.x, player.y);
+    if (!nearestChest && canUse && pressedInteract) {
+      const used = expeditions.useExtractionPortal();
+      if (used) {
+        // Extraction can destroy prompt/graphics via returnHub event in the same frame.
+        return;
+      }
+    }
+
+    if (!nearestChest && canUse) {
+      this.extractionPromptText.setVisible(true);
+      this.extractionPromptText.setText('Press E: Return to Hub');
+      this.extractionPromptText.setPosition(
+        (this.scale.width - this.extractionPromptText.width) * 0.5,
+        26,
+      );
+    }
+  }
+
+  private handleLeftClickTarget(pointer: Phaser.Input.Pointer): void {
+    const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const state = getState();
+
+    // Find closest monster to click position
+    let closestId: string | null = null;
+    let closestDist = Infinity;
+    const clickPadding = 10; // extra pixels around monster hitbox
+
+    for (const monster of state.monsters) {
+      if (monster.isDead) continue;
+      const dx = worldPoint.x - monster.x;
+      const dy = worldPoint.y - monster.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const hitRadius = monster.size * 0.5 + clickPadding;
+
+      if (d <= hitRadius && d < closestDist) {
+        closestDist = d;
+        closestId = monster.id;
+      }
+    }
+
+    // Only update target when clicking ON a monster (preserve target on empty clicks)
+    if (closestId !== null && state.player.targetMonsterId !== closestId) {
+      state.player.targetMonsterId = closestId;
+      emit('player:targetChanged', { monsterId: closestId });
+    }
+  }
+
+  private updateTargetIndicator(): void {
+    const state = getState();
+    const targetId = state.player.targetMonsterId;
+
+    if (!targetId) {
+      if (this.targetIndicator) {
+        this.targetIndicator.destroy();
+        this.targetIndicator = null;
+      }
+      return;
+    }
+
+    const monster = state.monsters.find(m => m.id === targetId);
+    if (!monster || monster.isDead) {
+      if (this.targetIndicator) {
+        this.targetIndicator.destroy();
+        this.targetIndicator = null;
+      }
+      state.player.targetMonsterId = null;
+      return;
+    }
+
+    if (!this.targetIndicator) {
+      this.targetIndicator = this.add.graphics();
+      this.targetIndicator.setDepth(4);
+    }
+
+    this.targetIndicator.clear();
+
+    // Pulsing gold ring around targeted monster
+    const radius = monster.size * 0.6 + 6;
+    const pulseAlpha = 0.4 + Math.sin(Date.now() * 0.006) * 0.3;
+    this.targetIndicator.lineStyle(2, 0xfbbf24, pulseAlpha);
+    this.targetIndicator.strokeCircle(monster.x, monster.y, radius);
+
+    // Corner brackets
+    const bracketLen = 6;
+    const br = radius + 3;
+    const corners = [
+      { x: monster.x - br, y: monster.y - br, dx: 1, dy: 1 },
+      { x: monster.x + br, y: monster.y - br, dx: -1, dy: 1 },
+      { x: monster.x - br, y: monster.y + br, dx: 1, dy: -1 },
+      { x: monster.x + br, y: monster.y + br, dx: -1, dy: -1 },
+    ];
+
+    this.targetIndicator.lineStyle(2, 0xfbbf24, pulseAlpha + 0.2);
+    for (const c of corners) {
+      this.targetIndicator.beginPath();
+      this.targetIndicator.moveTo(c.x + c.dx * bracketLen, c.y);
+      this.targetIndicator.lineTo(c.x, c.y);
+      this.targetIndicator.lineTo(c.x, c.y + c.dy * bracketLen);
+      this.targetIndicator.strokePath();
+    }
+  }
+
   private refreshWorldFromState(): void {
     const state = getState();
     const run = state.activeExpedition;
@@ -577,6 +870,7 @@ export class GameScene extends Phaser.Scene {
       this.expeditionGeometry = null;
     }
     this.clearExpeditionWalls();
+    this.clearChestVisuals();
   }
 
   private drawExpeditionGeometry(map: ExpeditionMap): void {
@@ -673,8 +967,17 @@ export class GameScene extends Phaser.Scene {
       return (n >>> 0) & 0xffff;
     };
 
+    const renderPadX = Math.max(this.cameras.main.width, 320);
+    const renderPadY = Math.max(this.cameras.main.height, 240);
+    const renderBounds = {
+      x: map.bounds.x - renderPadX,
+      y: map.bounds.y - renderPadY,
+      width: map.bounds.width + renderPadX * 2,
+      height: map.bounds.height + renderPadY * 2,
+    };
+
     g.fillStyle(palette.outsideBase, 1);
-    g.fillRect(map.bounds.x, map.bounds.y, map.bounds.width, map.bounds.height);
+    g.fillRect(renderBounds.x, renderBounds.y, renderBounds.width, renderBounds.height);
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -713,12 +1016,12 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    const blotchCount = Math.max(70, Math.floor((map.bounds.width * map.bounds.height) / 240000));
+    const blotchCount = Math.max(90, Math.floor((renderBounds.width * renderBounds.height) / 220000));
     for (let i = 0; i < blotchCount; i++) {
       const fx = noise(i * 3 + 17, i * 7 + 101) / 0xffff;
       const fy = noise(i * 5 + 29, i * 11 + 191) / 0xffff;
-      const x = map.bounds.x + fx * map.bounds.width;
-      const y = map.bounds.y + fy * map.bounds.height;
+      const x = renderBounds.x + fx * renderBounds.width;
+      const y = renderBounds.y + fy * renderBounds.height;
 
       const gx = Math.floor((x - grid.originX) / cell);
       const gy = Math.floor((y - grid.originY) / cell);
@@ -826,11 +1129,17 @@ export class GameScene extends Phaser.Scene {
       sprite.destroy();
     }
     this.lootSprites.clear();
+    this.clearChestVisuals();
 
     for (const [, telegraph] of this.activeTelegraphs) {
       telegraph.graphics.destroy();
     }
     this.activeTelegraphs.clear();
+
+    if (this.targetIndicator) {
+      this.targetIndicator.destroy();
+      this.targetIndicator = null;
+    }
 
     if (this.vfxManager) {
       this.vfxManager.destroy();

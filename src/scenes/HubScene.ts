@@ -1,10 +1,29 @@
 import Phaser from 'phaser';
-import { getPlayer, getState, setGameMode } from '@/core/game-state';
+import {
+  getPlayer,
+  getState,
+  setGameMode,
+  getExpeditionSelectedZoneId,
+  getExpeditionSelectedTierForZone,
+  setExpeditionSelectedZoneId,
+  setExpeditionSelectedTierForZone,
+  isExpeditionZoneUnlocked,
+  isExpeditionTierUnlocked,
+  getExpeditionMaxTier,
+} from '@/core/game-state';
 import { emit } from '@/core/event-bus';
 import { ZONES } from '@/data/zones.data';
-import { clampTier } from '@/data/expeditions.data';
+import { clampTier, EXPEDITION_MAX_TIER } from '@/data/expeditions.data';
 import * as expeditions from '@/systems/expeditions';
 import { PlayerEntity } from '@/entities/PlayerEntity';
+import {
+  getOrderedExpeditionZones,
+  getObjectiveForTier,
+  getExpeditionMonsterLevel,
+  getExpeditionCompletionXP,
+  getExpeditionCompletionGold,
+  getExpeditionCompletionChestCount,
+} from '@/data/expedition-progression.data';
 
 interface Station {
   id: string;
@@ -37,11 +56,14 @@ export class HubScene extends Phaser.Scene {
   private mapPanel!: Phaser.GameObjects.Container;
   private mapPanelTierText!: Phaser.GameObjects.Text;
   private mapPanelZoneText!: Phaser.GameObjects.Text;
+  private mapPanelObjectiveText!: Phaser.GameObjects.Text;
+  private mapPanelPreviewText!: Phaser.GameObjects.Text;
+  private mapPanelStatusText!: Phaser.GameObjects.Text;
   private mapPanelHintText!: Phaser.GameObjects.Text;
   private panelOpen = false;
 
   private selectedTier = 1;
-  private selectedZoneIndex = 0;
+  private selectedZoneId = 'whisperwood';
 
   constructor() {
     super({ key: 'HubScene' });
@@ -87,6 +109,7 @@ export class HubScene extends Phaser.Scene {
       .setVisible(false);
 
     this.createMapPanel();
+    this.syncSelectionFromMeta();
     this.refreshMapPanel();
 
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -111,6 +134,10 @@ export class HubScene extends Phaser.Scene {
     });
 
     this.keyEsc.on('down', () => {
+      if (getState().merchantOpen) {
+        emit('ui:merchantToggle');
+        return;
+      }
       if (this.panelOpen) {
         this.toggleMapPanel(false);
       }
@@ -135,7 +162,7 @@ export class HubScene extends Phaser.Scene {
     const pointer = this.input.activePointer;
     player.facingAngle = Math.atan2(pointer.worldY - player.y, pointer.worldX - player.x);
 
-    if (!this.panelOpen) {
+    if (!this.panelOpen && !getState().merchantOpen) {
       let dx = 0;
       let dy = 0;
       if (this.cursors.left.isDown || this.keyA.isDown) dx -= 1;
@@ -587,11 +614,11 @@ export class HubScene extends Phaser.Scene {
 
     const bg = this.add.graphics();
     bg.fillStyle(0x111827, 0.96);
-    bg.fillRoundedRect(-260, -170, 520, 340, 10);
+    bg.fillRoundedRect(-300, -220, 600, 440, 10);
     bg.lineStyle(2, 0x4b5563, 0.9);
-    bg.strokeRoundedRect(-260, -170, 520, 340, 10);
+    bg.strokeRoundedRect(-300, -220, 600, 440, 10);
 
-    const title = this.add.text(0, -140, 'Map Device', {
+    const title = this.add.text(0, -188, 'Map Device', {
       fontFamily: 'monospace',
       fontSize: '20px',
       color: '#f9fafb',
@@ -599,7 +626,7 @@ export class HubScene extends Phaser.Scene {
       strokeThickness: 2,
     }).setOrigin(0.5);
 
-    this.mapPanelTierText = this.add.text(0, -70, '', {
+    this.mapPanelTierText = this.add.text(0, -132, '', {
       fontFamily: 'monospace',
       fontSize: '16px',
       color: '#93c5fd',
@@ -607,7 +634,7 @@ export class HubScene extends Phaser.Scene {
       strokeThickness: 2,
     }).setOrigin(0.5);
 
-    this.mapPanelZoneText = this.add.text(0, -22, '', {
+    this.mapPanelZoneText = this.add.text(0, -92, '', {
       fontFamily: 'monospace',
       fontSize: '16px',
       color: '#a7f3d0',
@@ -615,7 +642,33 @@ export class HubScene extends Phaser.Scene {
       strokeThickness: 2,
     }).setOrigin(0.5);
 
-    this.mapPanelHintText = this.add.text(0, 96, '', {
+    this.mapPanelObjectiveText = this.add.text(0, -52, '', {
+      fontFamily: 'monospace',
+      fontSize: '15px',
+      color: '#fbbf24',
+      stroke: '#000000',
+      strokeThickness: 2,
+    }).setOrigin(0.5);
+
+    this.mapPanelPreviewText = this.add.text(0, 8, '', {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#e5e7eb',
+      align: 'center',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5);
+
+    this.mapPanelStatusText = this.add.text(0, 88, '', {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#fde68a',
+      align: 'center',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5);
+
+    this.mapPanelHintText = this.add.text(0, 168, '', {
       fontFamily: 'monospace',
       fontSize: '12px',
       color: '#e5e7eb',
@@ -624,7 +677,16 @@ export class HubScene extends Phaser.Scene {
       strokeThickness: 1,
     }).setOrigin(0.5);
 
-    this.mapPanel.add([bg, title, this.mapPanelTierText, this.mapPanelZoneText, this.mapPanelHintText]);
+    this.mapPanel.add([
+      bg,
+      title,
+      this.mapPanelTierText,
+      this.mapPanelZoneText,
+      this.mapPanelObjectiveText,
+      this.mapPanelPreviewText,
+      this.mapPanelStatusText,
+      this.mapPanelHintText,
+    ]);
   }
 
   // ============================================================================
@@ -652,7 +714,12 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
-    if (station.id === 'merchant' || station.id === 'blacksmith') {
+    if (station.id === 'merchant') {
+      emit('ui:merchantToggle');
+      return;
+    }
+
+    if (station.id === 'blacksmith') {
       emit('ui:inventoryToggle');
       return;
     }
@@ -662,6 +729,7 @@ export class HubScene extends Phaser.Scene {
     this.panelOpen = open;
     this.mapPanel.setVisible(open);
     if (open) {
+      this.syncSelectionFromMeta();
       this.refreshMapPanel();
     }
   }
@@ -670,78 +738,133 @@ export class HubScene extends Phaser.Scene {
   // Expedition selection
   // ============================================================================
 
-  private getUnlockedTiers(): number[] {
-    const tiers = [...getState().expeditionMeta.unlockedTiers].sort((a, b) => a - b);
-    return tiers.length > 0 ? tiers : [1];
+  private getSelectableZoneIds(): string[] {
+    return getOrderedExpeditionZones();
   }
 
-  private getZonesForTier(tier: number): string[] {
-    return Object.values(ZONES)
-      .filter(zone => zone.tier === tier)
-      .map(zone => zone.id);
+  private getSelectedZoneIndex(): number {
+    const zones = this.getSelectableZoneIds();
+    const idx = zones.indexOf(this.selectedZoneId);
+    return idx >= 0 ? idx : 0;
+  }
+
+  private syncSelectionFromMeta(): void {
+    const zoneId = getExpeditionSelectedZoneId();
+    this.selectedZoneId = zoneId;
+    this.selectedTier = getExpeditionSelectedTierForZone(zoneId);
+  }
+
+  private getZoneLockReason(zoneId: string): string {
+    if (isExpeditionZoneUnlocked(zoneId)) return '';
+    const ordered = this.getSelectableZoneIds();
+    const idx = ordered.indexOf(zoneId);
+    if (idx <= 0) return 'Locked';
+    const prevId = ordered[idx - 1];
+    const prevName = ZONES[prevId]?.name ?? prevId;
+    return `Locked: Defeat ${prevName} T${EXPEDITION_MAX_TIER} boss`;
+  }
+
+  private getTierLockReason(zoneId: string, tier: number): string {
+    if (!isExpeditionZoneUnlocked(zoneId)) return this.getZoneLockReason(zoneId);
+    if (isExpeditionTierUnlocked(zoneId, tier)) return 'Ready';
+    const maxTier = getExpeditionMaxTier(zoneId);
+    return `Locked: Complete ${ZONES[zoneId]?.name ?? zoneId} T${maxTier}`;
   }
 
   private refreshMapPanel(): void {
-    const unlocked = this.getUnlockedTiers();
-
-    if (!unlocked.includes(this.selectedTier)) {
-      this.selectedTier = unlocked[0];
-      this.selectedZoneIndex = 0;
+    const zones = this.getSelectableZoneIds();
+    if (!zones.includes(this.selectedZoneId)) {
+      this.selectedZoneId = zones[0] ?? 'whisperwood';
     }
+    this.selectedTier = clampTier(this.selectedTier);
 
-    const tierZones = this.getZonesForTier(this.selectedTier);
-    if (this.selectedZoneIndex >= tierZones.length) {
-      this.selectedZoneIndex = 0;
-    }
-
-    const zoneId = tierZones[this.selectedZoneIndex] ?? 'whisperwood';
-    const zone = ZONES[zoneId];
+    const zone = ZONES[this.selectedZoneId];
+    const objective = getObjectiveForTier(this.selectedTier) === 'boss_hunt'
+      ? 'Boss Hunt'
+      : 'Extermination';
+    const levelMin = getExpeditionMonsterLevel(this.selectedZoneId, this.selectedTier, 0);
+    const levelMax = getExpeditionMonsterLevel(this.selectedZoneId, this.selectedTier, 1);
+    const rewardXp = getExpeditionCompletionXP(this.selectedZoneId, this.selectedTier);
+    const rewardGold = getExpeditionCompletionGold(this.selectedZoneId, this.selectedTier);
+    const rewardChests = getExpeditionCompletionChestCount(this.selectedTier);
+    const maxUnlockedTier = getExpeditionMaxTier(this.selectedZoneId);
+    const status = this.getTierLockReason(this.selectedZoneId, this.selectedTier);
 
     this.mapPanelTierText.setText(`Tier: ${this.selectedTier}`);
-    this.mapPanelZoneText.setText(`Zone: ${zone?.name ?? zoneId}`);
+    this.mapPanelZoneText.setText(`Zone: ${zone?.name ?? this.selectedZoneId}`);
+    this.mapPanelObjectiveText.setText(`Objective: ${objective}`);
+    this.mapPanelPreviewText.setText(
+      `Monster Level: ${levelMin}-${levelMax}\n` +
+      `Rewards: ${rewardXp} XP, ${rewardGold} Gold, ${rewardChests} Chests\n` +
+      `Unlocked Tier: ${maxUnlockedTier}/${EXPEDITION_MAX_TIER}`
+    );
+    this.mapPanelStatusText.setText(status);
+    this.mapPanelStatusText.setColor(status === 'Ready' ? '#86efac' : '#fde68a');
     this.mapPanelHintText.setText(
       'Left/Right: Tier\nUp/Down: Zone\nEnter or E: Launch Expedition\nEsc: Close'
     );
   }
 
   private handleMapPanelInput(): void {
-    const unlocked = this.getUnlockedTiers();
-
     if (Phaser.Input.Keyboard.JustDown(this.cursors.left) || Phaser.Input.Keyboard.JustDown(this.keyA)) {
-      const idx = Math.max(0, unlocked.indexOf(this.selectedTier) - 1);
-      this.selectedTier = unlocked[idx] ?? unlocked[0];
-      this.selectedZoneIndex = 0;
+      this.selectedTier = clampTier(this.selectedTier - 1);
+      if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
+        setExpeditionSelectedTierForZone(this.selectedZoneId, this.selectedTier);
+      }
       this.refreshMapPanel();
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.cursors.right) || Phaser.Input.Keyboard.JustDown(this.keyD)) {
-      const idx = Math.min(unlocked.length - 1, unlocked.indexOf(this.selectedTier) + 1);
-      this.selectedTier = unlocked[idx] ?? unlocked[unlocked.length - 1];
-      this.selectedZoneIndex = 0;
+      this.selectedTier = clampTier(this.selectedTier + 1);
+      if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
+        setExpeditionSelectedTierForZone(this.selectedZoneId, this.selectedTier);
+      }
       this.refreshMapPanel();
     }
 
-    const zones = this.getZonesForTier(this.selectedTier);
+    const zones = this.getSelectableZoneIds();
 
     if (zones.length > 1 && (Phaser.Input.Keyboard.JustDown(this.cursors.up) || Phaser.Input.Keyboard.JustDown(this.keyW))) {
-      this.selectedZoneIndex = (this.selectedZoneIndex - 1 + zones.length) % zones.length;
+      const idx = (this.getSelectedZoneIndex() - 1 + zones.length) % zones.length;
+      this.selectedZoneId = zones[idx];
+      if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
+        setExpeditionSelectedZoneId(this.selectedZoneId);
+        this.selectedTier = getExpeditionSelectedTierForZone(this.selectedZoneId);
+      }
       this.refreshMapPanel();
     }
 
     if (zones.length > 1 && (Phaser.Input.Keyboard.JustDown(this.cursors.down) || Phaser.Input.Keyboard.JustDown(this.keyS))) {
-      this.selectedZoneIndex = (this.selectedZoneIndex + 1) % zones.length;
+      const idx = (this.getSelectedZoneIndex() + 1) % zones.length;
+      this.selectedZoneId = zones[idx];
+      if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
+        setExpeditionSelectedZoneId(this.selectedZoneId);
+        this.selectedTier = getExpeditionSelectedTierForZone(this.selectedZoneId);
+      }
       this.refreshMapPanel();
     }
   }
 
   private launchSelectedExpedition(): void {
+    const zoneId = this.selectedZoneId;
     const tier = clampTier(this.selectedTier);
-    const zones = this.getZonesForTier(tier);
-    const zoneId = zones[this.selectedZoneIndex] ?? 'whisperwood';
 
-    const run = expeditions.launchExpedition({ zoneId, tier, objective: 'extermination' });
+    if (!isExpeditionZoneUnlocked(zoneId)) {
+      this.mapPanelStatusText.setText(this.getZoneLockReason(zoneId));
+      this.mapPanelStatusText.setColor('#fca5a5');
+      return;
+    }
+
+    if (!isExpeditionTierUnlocked(zoneId, tier)) {
+      this.mapPanelStatusText.setText(this.getTierLockReason(zoneId, tier));
+      this.mapPanelStatusText.setColor('#fca5a5');
+      return;
+    }
+
+    const run = expeditions.launchExpedition({ zoneId, tier });
     if (!run) {
-      this.mapPanelHintText.setText('Unable to launch expedition.\nCheck unlock state.');
+      this.mapPanelStatusText.setText('Unable to launch expedition');
+      this.mapPanelStatusText.setColor('#fca5a5');
       return;
     }
 

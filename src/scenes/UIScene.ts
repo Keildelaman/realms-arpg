@@ -11,7 +11,9 @@ import { XPBar } from '@/ui/XPBar';
 import { SkillBar } from '@/ui/SkillBar';
 import { Minimap } from '@/ui/Minimap';
 import { InventoryPanel } from '@/ui/InventoryPanel';
+import { MerchantPanel } from '@/ui/MerchantPanel';
 import { LootPopupManager } from '@/ui/LootPopup';
+import { MonsterInfoPanel } from '@/ui/MonsterInfoPanel';
 import { COLORS } from '@/data/constants';
 
 export class UIScene extends Phaser.Scene {
@@ -21,7 +23,9 @@ export class UIScene extends Phaser.Scene {
   private skillBar!: SkillBar;
   private minimap!: Minimap;
   private inventoryPanel!: InventoryPanel;
+  private merchantPanel!: MerchantPanel;
   private lootPopups!: LootPopupManager;
+  private monsterInfoPanel!: MonsterInfoPanel;
 
   // Info displays
   private zoneText!: Phaser.GameObjects.Text;
@@ -69,8 +73,15 @@ export class UIScene extends Phaser.Scene {
     this.inventoryPanel = new InventoryPanel(this);
     this.add.existing(this.inventoryPanel);
 
+    // --- Merchant panel (hidden by default) ---
+    this.merchantPanel = new MerchantPanel(this);
+    this.add.existing(this.merchantPanel);
+
     // --- Loot popups ---
     this.lootPopups = new LootPopupManager(this);
+
+    // --- Monster info panel ---
+    this.monsterInfoPanel = new MonsterInfoPanel(this);
 
     // --- Info text ---
     this.zoneText = this.add.text(16, 16, '', {
@@ -155,6 +166,7 @@ export class UIScene extends Phaser.Scene {
     this.keyEsc.on('down', () => {
       const state = getState();
       if (state.gameMode !== 'expedition') return;
+      if (state.activeExpedition?.status === 'awaiting_extraction') return;
       if (state.inventoryOpen) {
         emit('ui:inventoryToggle');
         return;
@@ -187,6 +199,16 @@ export class UIScene extends Phaser.Scene {
       this.showResultToast(`Expedition Complete  +${totalXP} XP  +${totalGold} Gold`);
     });
 
+    on('expedition:readyToExtract', () => {
+      this.showResultToast('Map Cleared  -  Open reward chest, then use portal');
+    });
+
+    on('expedition:chestOpened', (data) => {
+      const rarityLabel = data.rarity.charAt(0).toUpperCase() + data.rarity.slice(1);
+      const sourceLabel = data.source === 'completion' ? 'Reward' : 'Map';
+      this.showResultToast(`${sourceLabel} ${rarityLabel} Chest Opened  -  ${data.dropCount} loot drops`);
+    });
+
     on('expedition:failed', (data) => {
       if (data.reason === 'no_portals') {
         this.showResultToast('Expedition Failed: No portals remaining');
@@ -213,6 +235,7 @@ export class UIScene extends Phaser.Scene {
     this.minimap.update(dt);
     this.inventoryPanel.update(dt);
     this.lootPopups.update(dt);
+    this.monsterInfoPanel.update(dt);
     this.controlsHint.setVisible(state.gameMode === 'expedition');
 
     this.updateZoneText();
@@ -264,7 +287,20 @@ export class UIScene extends Phaser.Scene {
     }
 
     const run = state.activeExpedition;
-    this.objectiveText.setText(`Extermination: ${run.progress.currentKills}/${run.progress.requiredKills}`);
+    if (run.status === 'awaiting_extraction') {
+      const hasPendingRewardChest = run.chests.some(chest => chest.source === 'completion' && !chest.isOpened);
+      if (hasPendingRewardChest) {
+        this.objectiveText.setText('Map Cleared: Open Reward Chest (E)');
+      } else {
+        this.objectiveText.setText('Map Cleared: Use Extraction Portal (E)');
+      }
+      this.portalsText.setText('');
+      this.leaveConfirmVisible = false;
+      this.syncLeaveConfirm();
+      return;
+    }
+    const label = run.map.objective === 'boss_hunt' ? 'Boss Hunt' : 'Extermination';
+    this.objectiveText.setText(`${label}: ${run.progress.currentKills}/${run.progress.requiredKills}`);
     this.portalsText.setText(`Portals: ${run.portalsRemaining}/${run.maxPortals}`);
     this.syncLeaveConfirm();
   }
