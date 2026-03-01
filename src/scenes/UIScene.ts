@@ -212,6 +212,7 @@ export class UIScene extends Phaser.Scene {
     this.skillBar.update(dt);
     this.minimap.update(dt);
     this.inventoryPanel.update(dt);
+    this.lootPopups.update(dt);
     this.controlsHint.setVisible(state.gameMode === 'expedition');
 
     this.updateZoneText();

@@ -23,6 +23,7 @@ import * as progression from '@/systems/progression';
 import * as economy from '@/systems/economy';
 import * as loot from '@/systems/loot';
 import * as monsterAI from '@/systems/monster-ai';
+import * as monsterAbilities from '@/systems/monster-abilities';
 import * as zones from '@/systems/zones';
 import * as expeditions from '@/systems/expeditions';
 
@@ -49,6 +50,7 @@ export class GameScene extends Phaser.Scene {
   private expeditionGeometry: Phaser.GameObjects.Graphics | null = null;
   private expeditionWallGroup: Phaser.Physics.Arcade.StaticGroup | null = null;
   private expeditionWallObjects: Phaser.GameObjects.Rectangle[] = [];
+  private activeTelegraphs: Map<string, { graphics: Phaser.GameObjects.Graphics; duration: number; elapsed: number; radius?: number }> = new Map();
 
   // Input
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -87,6 +89,7 @@ export class GameScene extends Phaser.Scene {
       economy.init();
       loot.init();
       monsterAI.init();
+      monsterAbilities.init();
       zones.init();
       expeditions.init();
 
@@ -249,6 +252,45 @@ export class GameScene extends Phaser.Scene {
       this.cameras.main.flash(500, 255, 0, 0);
     });
 
+    // --- Telegraph rendering ---
+    on('telegraph:created', (data) => {
+      const gfx = this.add.graphics();
+      gfx.setDepth(3);
+      this.activeTelegraphs.set(data.id, {
+        graphics: gfx,
+        duration: data.duration,
+        elapsed: 0,
+        radius: data.radius,
+      });
+    });
+
+    on('telegraph:expired', (data) => {
+      const telegraph = this.activeTelegraphs.get(data.id);
+      if (telegraph) {
+        telegraph.graphics.destroy();
+        this.activeTelegraphs.delete(data.id);
+      }
+    });
+
+    on('monster:abilityCastComplete', (data) => {
+      // Clean up any lingering telegraphs for this monster
+      for (const [id, telegraph] of this.activeTelegraphs) {
+        if (id.includes(data.monsterId)) {
+          telegraph.graphics.destroy();
+          this.activeTelegraphs.delete(id);
+        }
+      }
+    });
+
+    on('monster:abilityCancelled', (data) => {
+      for (const [id, telegraph] of this.activeTelegraphs) {
+        if (id.includes(data.monsterId)) {
+          telegraph.graphics.destroy();
+          this.activeTelegraphs.delete(id);
+        }
+      }
+    });
+
     on('player:levelUp', (data) => {
       // Flash screen gold on level up
       this.cameras.main.flash(300, 255, 215, 0, false);
@@ -401,6 +443,31 @@ export class GameScene extends Phaser.Scene {
       if (!activeLootIds.has(id)) {
         sprite.destroy();
         this.lootSprites.delete(id);
+      }
+    }
+
+    // --- Update telegraphs ---
+    for (const [id, telegraph] of this.activeTelegraphs) {
+      telegraph.elapsed += dt;
+      const progress = Math.min(1, telegraph.elapsed / telegraph.duration);
+
+      telegraph.graphics.clear();
+
+      // Draw expanding fill with increasing alpha
+      const alpha = 0.05 + progress * 0.25;
+      const flashAlpha = progress > 0.8 ? 0.4 + (progress - 0.8) * 3 : 0;
+
+      if (telegraph.radius) {
+        telegraph.graphics.fillStyle(0xff2222, alpha + flashAlpha);
+        telegraph.graphics.fillCircle(0, 0, telegraph.radius * progress);
+        telegraph.graphics.lineStyle(2, 0xff4444, 0.4 + progress * 0.4);
+        telegraph.graphics.strokeCircle(0, 0, telegraph.radius);
+      }
+
+      // Auto-expire
+      if (telegraph.elapsed >= telegraph.duration) {
+        telegraph.graphics.destroy();
+        this.activeTelegraphs.delete(id);
       }
     }
 
@@ -759,6 +826,11 @@ export class GameScene extends Phaser.Scene {
       sprite.destroy();
     }
     this.lootSprites.clear();
+
+    for (const [, telegraph] of this.activeTelegraphs) {
+      telegraph.graphics.destroy();
+    }
+    this.activeTelegraphs.clear();
 
     if (this.vfxManager) {
       this.vfxManager.destroy();

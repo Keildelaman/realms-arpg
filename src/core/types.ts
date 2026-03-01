@@ -53,6 +53,30 @@ export type AffixCategory =
   | 'skillPower'
   | 'skillLevel';
 
+export type MonsterArchetype =
+  | 'melee'
+  | 'ranged'
+  | 'caster'
+  | 'charger'
+  | 'exploder';
+
+export type MonsterRarity =
+  | 'normal'
+  | 'magic'
+  | 'rare';
+
+export type TelegraphShape =
+  | 'circle'
+  | 'cone'
+  | 'line'
+  | 'ring';
+
+export type MonsterAbilityTargeting =
+  | 'player'
+  | 'self'
+  | 'player_predict'
+  | 'random_near';
+
 export type MonsterAIState =
   | 'idle'
   | 'patrol'
@@ -60,6 +84,10 @@ export type MonsterAIState =
   | 'attack'
   | 'flee'
   | 'stunned'
+  | 'casting'
+  | 'charging'
+  | 'recovering'
+  | 'fusing'
   | 'dead';
 
 export type Direction = 'up' | 'down' | 'left' | 'right';
@@ -174,6 +202,29 @@ export interface MonsterDefinition {
 
   isBoss: boolean;
   spawnWeight: number; // relative spawn chance (0 = don't spawn randomly)
+
+  // Archetype + abilities
+  archetype: MonsterArchetype;
+  abilities: string[];
+
+  // Ranged/caster specific
+  preferredRange?: number;
+  retreatSpeed?: number;
+
+  // Charger specific
+  chargeWindup?: number;
+  chargeSpeed?: number;
+  chargeDamageMultiplier?: number;
+  chargeDistance?: number;
+
+  // Exploder specific
+  explosionRadius?: number;
+  explosionDamage?: number;
+  fuseTime?: number;
+  detonateOnDeath?: boolean;
+
+  // Shape override
+  shape?: 'circle' | 'diamond' | 'triangle' | 'square' | 'hexagon';
 }
 
 export interface ZoneDefinition {
@@ -360,6 +411,86 @@ export interface StatusEffectDefinition {
   color: string;
 }
 
+// --- Monster Ability/Affix Definitions ---
+
+export interface MonsterAbilityDef {
+  id: string;
+  name: string;
+  cooldown: number;
+  castTime: number;
+  activationRange: number;
+  targeting: MonsterAbilityTargeting;
+  damageMultiplier: number;
+  damageType: DamageType;
+  radius?: number;
+  width?: number;
+  length?: number;
+  projectile?: {
+    speed: number;
+    size: number;
+    color: string;
+    piercing: boolean;
+    count: number;
+    spread: number;
+    maxDistance: number;
+  };
+  telegraph: {
+    shape: TelegraphShape;
+    color: string;
+    duration: number;
+    warningFlash: boolean;
+  };
+  triggerOnDeath?: boolean;
+  moveDuringCast: boolean;
+  dashToTarget?: boolean;
+  dashSpeed?: number;
+}
+
+export interface MonsterAffixDef {
+  id: string;
+  name: string;
+  description: string;
+  hpMultiplier?: number;
+  damageMultiplier?: number;
+  speedMultiplier?: number;
+  armorBonus?: number;
+  sizeMultiplier?: number;
+  onHitEffect?: string;
+  onDeathEffect?: string;
+  auraEffect?: string;
+  auraRadius?: number;
+  auraStatBuff?: {
+    stat: 'damage' | 'speed' | 'defense';
+    multiplier: number;
+  };
+  attackCooldownMultiplier?: number;
+  color: string;
+  particleEffect?: string;
+}
+
+export interface MonsterAffixInstance {
+  id: string;
+  auraCooldown?: number;
+  lastTriggerTime?: number;
+}
+
+export interface ActiveTelegraph {
+  id: string;
+  monsterId: string;
+  abilityId: string;
+  shape: TelegraphShape;
+  x: number;
+  y: number;
+  targetX: number;
+  targetY: number;
+  radius?: number;
+  width?: number;
+  length?: number;
+  color: string;
+  duration: number;
+  elapsed: number;
+}
+
 // --- Runtime Instances (mutable game state) ---
 
 export interface PlayerState {
@@ -503,6 +634,36 @@ export interface MonsterInstance {
   gold: number;
   dropChance: number;
   zone: string;
+
+  // Archetype
+  archetype: MonsterArchetype;
+
+  // Rarity
+  rarity: MonsterRarity;
+  affixes: MonsterAffixInstance[];
+
+  // Ability state
+  abilityCooldowns: Record<string, number>;
+  currentAbility: string | null;
+  abilityCastTimer: number;
+  abilityTargetX: number;
+  abilityTargetY: number;
+
+  // Charger state
+  isCharging: boolean;
+  chargeTargetX: number;
+  chargeTargetY: number;
+  chargeTimer: number;
+
+  // Exploder state
+  isFused: boolean;
+  fuseTimer: number;
+
+  // Ranged/caster state
+  isRetreating: boolean;
+
+  // Visual
+  shape: 'circle' | 'diamond' | 'triangle' | 'square' | 'hexagon';
 }
 
 export interface ProjectileInstance {
@@ -748,6 +909,77 @@ export type GameEventMap = {
     damageType: DamageType;
     isHeal?: boolean;
   };
+
+  // Monster ability events
+  'monster:abilityCastStart': {
+    monsterId: string;
+    abilityId: string;
+    targetX: number;
+    targetY: number;
+    castTime: number;
+  };
+  'monster:abilityCastComplete': {
+    monsterId: string;
+    abilityId: string;
+  };
+  'monster:abilityCancelled': {
+    monsterId: string;
+    abilityId: string;
+  };
+
+  // Charger events
+  'monster:chargeStart': {
+    monsterId: string;
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+    speed: number;
+  };
+  'monster:chargeEnd': {
+    monsterId: string;
+    hitPlayer: boolean;
+  };
+
+  // Exploder events
+  'monster:fuseStart': {
+    monsterId: string;
+    fuseTime: number;
+    radius: number;
+  };
+  'monster:detonated': {
+    monsterId: string;
+    x: number;
+    y: number;
+    radius: number;
+    damage: number;
+    hitPlayer: boolean;
+  };
+
+  // Rarity events
+  'monster:raritySpawned': {
+    monsterId: string;
+    rarity: MonsterRarity;
+    affixes: string[];
+  };
+
+  // Telegraph events
+  'telegraph:created': {
+    id: string;
+    monsterId: string;
+    shape: TelegraphShape;
+    x: number;
+    y: number;
+    radius?: number;
+    color: string;
+    duration: number;
+  };
+  'telegraph:expired': { id: string };
+
+  // Affix events
+  'affix:teleport': { monsterId: string; fromX: number; fromY: number; toX: number; toY: number };
+  'affix:frostNova': { x: number; y: number; radius: number };
+  'affix:vampiricHeal': { monsterId: string; amount: number };
 
   // Expedition events
   'expedition:launched': { runId: string; zoneId: string; tier: number; seed: number };

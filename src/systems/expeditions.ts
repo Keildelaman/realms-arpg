@@ -13,6 +13,12 @@ import type {
 } from '@/core/types';
 import { on, emit } from '@/core/event-bus';
 import {
+  rollMonsterRarity,
+  rollAffixes,
+  applyRarityScaling,
+  buildRarityName,
+} from '@/systems/monster-rarity';
+import {
   getState,
   getPlayer,
   addMonster,
@@ -200,7 +206,13 @@ function createMonsterInstance(
   const hp = monsterHP(def.baseHP, def.hpPerLevel, level);
   const shieldAmount = def.shieldPercent ? Math.floor(hp * def.shieldPercent) : 0;
 
-  return {
+  // Initialize ability cooldowns
+  const abilityCooldowns: Record<string, number> = {};
+  for (const abilityId of def.abilities) {
+    abilityCooldowns[abilityId] = 0;
+  }
+
+  const instance: MonsterInstance = {
     id: `monster_${nextMonsterId++}`,
     definitionId: def.id,
     name: def.name,
@@ -248,7 +260,45 @@ function createMonsterInstance(
     gold: monsterGoldReward(def.gold, level),
     dropChance: def.dropChance,
     zone: zoneId,
+
+    // Archetype + rarity fields
+    archetype: def.archetype,
+    rarity: 'normal',
+    affixes: [],
+    abilityCooldowns,
+    currentAbility: null,
+    abilityCastTimer: 0,
+    abilityTargetX: 0,
+    abilityTargetY: 0,
+    isCharging: false,
+    chargeTargetX: 0,
+    chargeTargetY: 0,
+    chargeTimer: 0,
+    isFused: false,
+    fuseTimer: 0,
+    isRetreating: false,
+    shape: def.shape ?? 'square',
   };
+
+  // Apply rarity in expeditions
+  const zone = ZONES[zoneId];
+  const tier = zone?.tier ?? 1;
+  const rarity = rollMonsterRarity(tier, def.isBoss, def.archetype);
+  instance.rarity = rarity;
+
+  if (rarity !== 'normal') {
+    const affixIds = rollAffixes(rarity);
+    applyRarityScaling(instance, rarity, affixIds);
+    instance.name = buildRarityName(def.name, rarity, affixIds);
+
+    emit('monster:raritySpawned', {
+      monsterId: instance.id,
+      rarity,
+      affixes: affixIds,
+    });
+  }
+
+  return instance;
 }
 
 function chooseMonsterDefinition(zoneId: string, rng: LocalRng): MonsterDefinition | null {

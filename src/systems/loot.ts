@@ -19,6 +19,7 @@ import {
   BOSS_SECOND_DROP_CHANCE,
   INVENTORY_SIZE,
 } from '@/data/constants';
+import { getRarityScaling } from '@/systems/monster-rarity';
 
 // --- Internal state ---
 
@@ -215,12 +216,16 @@ function onMonsterDied(data: {
   const monster = getMonsterById(data.monsterId);
 
   // Monster may already be removed by the time this fires, so use defaults
-  const dropChance = monster?.dropChance ?? 0.15;
+  let dropChance = monster?.dropChance ?? 0.15;
   const isBoss = data.isBoss;
 
-  // Determine tier from zone. For now, use a simple lookup.
-  // The zone system would normally provide this, but we can infer from
-  // monster data or use a default.
+  // Apply rarity-based drop chance multiplier
+  if (monster) {
+    const rarityScaling = getRarityScaling(monster.rarity);
+    dropChance *= rarityScaling.dropChanceMult;
+  }
+
+  // Determine tier from zone
   const tier = monster ? getTierFromZone(monster.zone) : 1;
 
   rollDrop(data.monsterId, data.x, data.y, dropChance, isBoss, tier);

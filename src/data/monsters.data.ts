@@ -14,205 +14,194 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
 
   // ==========================================================================
   // ZONE 1: WHISPERWOOD GLEN (Levels 1-10) — Forest green theme
-  // All normal type. Easy entry zone.
+  // 7 unique monsters introducing all 5 archetypes.
   // ==========================================================================
-
-  whisperwood_rabbit: {
-    id: 'whisperwood_rabbit',
-    name: 'Giant Rabbit',
-    types: ['normal'],
-    zone: 'whisperwood',
-    baseHP: 52,
-    hpPerLevel: 25,
-    attack: 5,
-    defense: 2,
-    moveSpeed: 90,
-    attackRange: 30,
-    attackCooldown: 1.8,
-    aggroRange: 180,
-    xp: 24,
-    gold: 5,
-    dropChance: 0.08,
-    color: '#b0b0b0',
-    size: 28,
-    isBoss: false,
-    spawnWeight: 30,
-  },
-
-  whisperwood_sprite: {
-    id: 'whisperwood_sprite',
-    name: 'Forest Sprite',
-    types: ['normal'],
-    zone: 'whisperwood',
-    baseHP: 60,
-    hpPerLevel: 20,
-    attack: 6,
-    defense: 1,
-    moveSpeed: 100,
-    attackRange: 35,
-    attackCooldown: 1.5,
-    aggroRange: 200,
-    xp: 28,
-    gold: 8,
-    dropChance: 0.08,
-    color: '#90ee90',
-    size: 26,
-    isBoss: false,
-    spawnWeight: 30,
-  },
-
-  whisperwood_mushroom: {
-    id: 'whisperwood_mushroom',
-    name: 'Spore Puff',
-    types: ['normal'],
-    zone: 'whisperwood',
-    baseHP: 63,
-    hpPerLevel: 22,
-    attack: 4,
-    defense: 4,
-    moveSpeed: 50,
-    attackRange: 25,
-    attackCooldown: 2.2,
-    aggroRange: 140,
-    xp: 30,
-    gold: 9,
-    dropChance: 0.09,
-    color: '#c4a35a',
-    size: 28,
-    isBoss: false,
-    spawnWeight: 28,
-  },
-
-  whisperwood_boar: {
-    id: 'whisperwood_boar',
-    name: 'Wild Boar',
-    types: ['normal'],
-    zone: 'whisperwood',
-    baseHP: 70,
-    hpPerLevel: 20,
-    attack: 8,
-    defense: 3,
-    moveSpeed: 85,
-    attackRange: 32,
-    attackCooldown: 1.6,
-    aggroRange: 200,
-    xp: 35,
-    gold: 12,
-    dropChance: 0.10,
-    color: '#8b6914',
-    size: 32,
-    isBoss: false,
-    spawnWeight: 25,
-  },
-
-  whisperwood_spider: {
-    id: 'whisperwood_spider',
-    name: 'Cave Spider',
-    types: ['normal'],
-    zone: 'whisperwood',
-    baseHP: 77,
-    hpPerLevel: 18,
-    attack: 7,
-    defense: 2,
-    moveSpeed: 95,
-    attackRange: 28,
-    attackCooldown: 1.4,
-    aggroRange: 220,
-    xp: 33,
-    gold: 12,
-    dropChance: 0.10,
-    color: '#4a4a4a',
-    size: 30,
-    isBoss: false,
-    spawnWeight: 25,
-  },
 
   whisperwood_wolf: {
     id: 'whisperwood_wolf',
-    name: 'Timber Wolf',
+    name: 'Forest Wolf',
     types: ['normal'],
     zone: 'whisperwood',
-    baseHP: 84,
-    hpPerLevel: 20,
-    attack: 9,
-    defense: 3,
+    baseHP: 60,
+    hpPerLevel: 8,
+    attack: 5,
+    defense: 2,
     moveSpeed: 110,
-    attackRange: 30,
-    attackCooldown: 1.3,
+    attackRange: 35,
+    attackCooldown: 1.4,
     aggroRange: 250,
-    xp: 38,
-    gold: 15,
-    dropChance: 0.12,
-    color: '#7a7a7a',
-    size: 32,
+    xp: 30,
+    gold: 8,
+    dropChance: 0.10,
+    color: '#8B7355',
+    size: 28,
+    isBoss: false,
+    spawnWeight: 30,
+    archetype: 'melee',
+    abilities: [],
+    shape: 'circle',
+  },
+
+  whisperwood_thorn_sprite: {
+    id: 'whisperwood_thorn_sprite',
+    name: 'Thorn Sprite',
+    types: ['normal'],
+    zone: 'whisperwood',
+    baseHP: 35,
+    hpPerLevel: 5,
+    attack: 4,
+    defense: 1,
+    moveSpeed: 90,
+    attackRange: 220,
+    attackCooldown: 1.8,
+    aggroRange: 280,
+    preferredRange: 220,
+    xp: 28,
+    gold: 7,
+    dropChance: 0.10,
+    color: '#7BC86C',
+    size: 22,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'ranged',
+    abilities: ['arrow_shot'],
+    shape: 'diamond',
   },
 
-  whisperwood_bear: {
-    id: 'whisperwood_bear',
-    name: 'Forest Bear',
-    types: ['normal'],
+  whisperwood_mushroom_brute: {
+    id: 'whisperwood_mushroom_brute',
+    name: 'Mushroom Brute',
+    types: ['armored'],
     zone: 'whisperwood',
-    baseHP: 95,
-    hpPerLevel: 18,
-    attack: 10,
+    baseHP: 120,
+    hpPerLevel: 14,
+    attack: 8,
     defense: 5,
-    moveSpeed: 65,
-    attackRange: 35,
+    moveSpeed: 55,
+    attackRange: 40,
     attackCooldown: 2.0,
     aggroRange: 200,
-    xp: 44,
-    gold: 18,
+    armor: 5,
+    xp: 40,
+    gold: 12,
     dropChance: 0.12,
-    color: '#6b3e26',
+    color: '#C08050',
     size: 36,
     isBoss: false,
-    spawnWeight: 22,
+    spawnWeight: 18,
+    archetype: 'melee',
+    abilities: ['ground_slam'],
+    shape: 'square',
   },
 
-  whisperwood_owl: {
-    id: 'whisperwood_owl',
-    name: 'Shadow Owl',
+  whisperwood_spitting_toad: {
+    id: 'whisperwood_spitting_toad',
+    name: 'Spitting Toad',
     types: ['normal'],
     zone: 'whisperwood',
-    baseHP: 98,
-    hpPerLevel: 18,
-    attack: 11,
+    baseHP: 45,
+    hpPerLevel: 6,
+    attack: 5,
     defense: 2,
-    moveSpeed: 105,
-    attackRange: 40,
-    attackCooldown: 1.5,
-    aggroRange: 280,
-    xp: 48,
-    gold: 20,
-    dropChance: 0.13,
-    color: '#3d3d5c',
+    moveSpeed: 70,
+    attackRange: 200,
+    attackCooldown: 2.2,
+    aggroRange: 260,
+    preferredRange: 200,
+    xp: 32,
+    gold: 9,
+    dropChance: 0.11,
+    color: '#4A7C59',
     size: 30,
     isBoss: false,
-    spawnWeight: 20,
+    spawnWeight: 15,
+    archetype: 'ranged',
+    abilities: ['poison_spit'],
+    shape: 'circle',
   },
 
-  whisperwood_treant: {
-    id: 'whisperwood_treant',
-    name: 'Grumpy Treant',
+  whisperwood_bramble_stag: {
+    id: 'whisperwood_bramble_stag',
+    name: 'Bramble Stag',
     types: ['normal'],
     zone: 'whisperwood',
-    baseHP: 112,
-    hpPerLevel: 22,
-    attack: 8,
-    defense: 8,
-    moveSpeed: 40,
-    attackRange: 40,
-    attackCooldown: 2.5,
-    aggroRange: 160,
-    xp: 52,
-    gold: 22,
-    dropChance: 0.14,
-    color: '#3d6b3d',
-    size: 36,
+    baseHP: 80,
+    hpPerLevel: 10,
+    attack: 7,
+    defense: 3,
+    moveSpeed: 90,
+    attackRange: 35,
+    attackCooldown: 1.6,
+    aggroRange: 300,
+    chargeWindup: 0.9,
+    chargeSpeed: 420,
+    chargeDamageMultiplier: 1.8,
+    chargeDistance: 280,
+    xp: 38,
+    gold: 12,
+    dropChance: 0.12,
+    color: '#6B4226',
+    size: 34,
     isBoss: false,
-    spawnWeight: 20,
+    spawnWeight: 12,
+    archetype: 'charger',
+    abilities: [],
+    shape: 'triangle',
+  },
+
+  whisperwood_will_o_wisp: {
+    id: 'whisperwood_will_o_wisp',
+    name: 'Will-o-Wisp',
+    types: ['normal'],
+    zone: 'whisperwood',
+    baseHP: 30,
+    hpPerLevel: 4,
+    attack: 6,
+    defense: 1,
+    moveSpeed: 85,
+    attackRange: 250,
+    attackCooldown: 2.5,
+    aggroRange: 300,
+    preferredRange: 250,
+    xp: 35,
+    gold: 10,
+    dropChance: 0.11,
+    color: '#FFD700',
+    size: 20,
+    isBoss: false,
+    spawnWeight: 10,
+    archetype: 'caster',
+    abilities: ['fireball'],
+    shape: 'hexagon',
+  },
+
+  whisperwood_blightpuff: {
+    id: 'whisperwood_blightpuff',
+    name: 'Blightpuff',
+    types: ['normal'],
+    zone: 'whisperwood',
+    baseHP: 25,
+    hpPerLevel: 3,
+    attack: 10,
+    defense: 0,
+    moveSpeed: 150,
+    attackRange: 30,
+    attackCooldown: 99, // exploders don't basic attack
+    aggroRange: 280,
+    fuseTime: 1.0,
+    explosionRadius: 70,
+    explosionDamage: 12,
+    detonateOnDeath: false,
+    xp: 25,
+    gold: 6,
+    dropChance: 0.08,
+    color: '#90EE90',
+    size: 20,
+    isBoss: false,
+    spawnWeight: 10,
+    archetype: 'exploder',
+    abilities: [],
+    shape: 'circle',
   },
 
   boss_mossback: {
@@ -237,6 +226,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 56,
     isBoss: true,
     spawnWeight: 0,
+    archetype: 'melee',
+    abilities: [],
   },
 
   // ==========================================================================
@@ -264,6 +255,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 28,
     isBoss: false,
     spawnWeight: 30,
+    archetype: 'melee',
+    abilities: [],
   },
 
   dusthaven_scorpion: {
@@ -286,6 +279,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 30,
     isBoss: false,
     spawnWeight: 28,
+    archetype: 'melee',
+    abilities: [],
   },
 
   dusthaven_snake: {
@@ -310,6 +305,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 28,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   dusthaven_devil: {
@@ -334,6 +331,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 30,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   dusthaven_vulture: {
@@ -358,6 +357,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 23,
+    archetype: 'melee',
+    abilities: [],
   },
 
   dusthaven_bandit: {
@@ -382,6 +383,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   dusthaven_raider: {
@@ -406,6 +409,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 22,
+    archetype: 'melee',
+    abilities: [],
   },
 
   dusthaven_stalker: {
@@ -430,6 +435,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   dusthaven_coyote: {
@@ -452,6 +459,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   boss_redfang: {
@@ -476,6 +485,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 52,
     isBoss: true,
     spawnWeight: 0,
+    archetype: 'melee',
+    abilities: [],
   },
 
   // ==========================================================================
@@ -503,6 +514,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 30,
     isBoss: false,
     spawnWeight: 30,
+    archetype: 'melee',
+    abilities: [],
   },
 
   frosthollow_toad: {
@@ -526,6 +539,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 28,
+    archetype: 'melee',
+    abilities: [],
   },
 
   frosthollow_wisp: {
@@ -550,6 +565,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 26,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   frosthollow_vine: {
@@ -574,6 +591,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   frosthollow_leech: {
@@ -598,6 +617,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 28,
     isBoss: false,
     spawnWeight: 24,
+    archetype: 'melee',
+    abilities: [],
   },
 
   frosthollow_hag: {
@@ -621,6 +642,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   frosthollow_shade: {
@@ -643,6 +666,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 22,
+    archetype: 'melee',
+    abilities: [],
   },
 
   frosthollow_husk: {
@@ -667,6 +692,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   frosthollow_serpent: {
@@ -691,6 +718,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 36,
     isBoss: false,
     spawnWeight: 18,
+    archetype: 'melee',
+    abilities: [],
   },
 
   boss_mire_mother: {
@@ -716,6 +745,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 60,
     isBoss: true,
     spawnWeight: 0,
+    archetype: 'melee',
+    abilities: [],
   },
 
   // ==========================================================================
@@ -744,6 +775,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 30,
+    archetype: 'melee',
+    abilities: [],
   },
 
   emberpeak_spider: {
@@ -768,6 +801,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 30,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   emberpeak_bat: {
@@ -792,6 +827,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   emberpeak_sentinel: {
@@ -817,6 +854,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   emberpeak_worm: {
@@ -840,6 +879,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 24,
+    archetype: 'melee',
+    abilities: [],
   },
 
   emberpeak_kobold: {
@@ -864,6 +905,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 28,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   emberpeak_drake: {
@@ -888,6 +931,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 36,
     isBoss: false,
     spawnWeight: 22,
+    archetype: 'melee',
+    abilities: [],
   },
 
   emberpeak_golem: {
@@ -912,6 +957,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 36,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   emberpeak_guardian: {
@@ -937,6 +984,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 38,
     isBoss: false,
     spawnWeight: 18,
+    archetype: 'melee',
+    abilities: [],
   },
 
   boss_grimstone: {
@@ -962,6 +1011,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 64,
     isBoss: true,
     spawnWeight: 0,
+    archetype: 'melee',
+    abilities: [],
   },
 
   // ==========================================================================
@@ -991,6 +1042,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   shadowmere_slime: {
@@ -1014,6 +1067,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 30,
+    archetype: 'melee',
+    abilities: [],
   },
 
   shadowmere_imp: {
@@ -1038,6 +1093,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 28,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   shadowmere_cultist: {
@@ -1063,6 +1120,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   shadowmere_wraith: {
@@ -1087,6 +1146,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   shadowmere_golem: {
@@ -1112,6 +1173,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 38,
     isBoss: false,
     spawnWeight: 18,
+    archetype: 'melee',
+    abilities: [],
   },
 
   shadowmere_salamander: {
@@ -1135,6 +1198,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 22,
+    archetype: 'melee',
+    abilities: [],
   },
 
   shadowmere_giant: {
@@ -1158,6 +1223,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 40,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   shadowmere_drake: {
@@ -1182,6 +1249,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 38,
     isBoss: false,
     spawnWeight: 18,
+    archetype: 'melee',
+    abilities: [],
   },
 
   boss_pyrax: {
@@ -1208,6 +1277,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 64,
     isBoss: true,
     spawnWeight: 0,
+    archetype: 'melee',
+    abilities: [],
   },
 
   // ==========================================================================
@@ -1237,6 +1308,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 28,
     isBoss: false,
     spawnWeight: 30,
+    archetype: 'melee',
+    abilities: [],
   },
 
   crystalspire_yeti: {
@@ -1262,6 +1335,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 40,
     isBoss: false,
     spawnWeight: 22,
+    archetype: 'melee',
+    abilities: [],
   },
 
   crystalspire_elemental: {
@@ -1286,6 +1361,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 36,
     isBoss: false,
     spawnWeight: 24,
+    archetype: 'melee',
+    abilities: [],
   },
 
   crystalspire_prowler: {
@@ -1310,6 +1387,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 36,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   crystalspire_wolf: {
@@ -1334,6 +1413,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 24,
+    archetype: 'melee',
+    abilities: [],
   },
 
   crystalspire_wraith: {
@@ -1357,6 +1438,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   crystalspire_banshee: {
@@ -1382,6 +1465,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 18,
+    archetype: 'melee',
+    abilities: [],
   },
 
   crystalspire_giant: {
@@ -1405,6 +1490,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 42,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   crystalspire_wyrm: {
@@ -1429,6 +1516,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 40,
     isBoss: false,
     spawnWeight: 18,
+    archetype: 'melee',
+    abilities: [],
   },
 
   boss_glacielle: {
@@ -1454,6 +1543,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 60,
     isBoss: true,
     spawnWeight: 0,
+    archetype: 'melee',
+    abilities: [],
   },
 
   // ==========================================================================
@@ -1483,6 +1574,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 30,
+    archetype: 'melee',
+    abilities: [],
   },
 
   void_rift_stalker: {
@@ -1509,6 +1602,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 32,
     isBoss: false,
     spawnWeight: 22,
+    archetype: 'melee',
+    abilities: [],
   },
 
   void_rift_imp: {
@@ -1533,6 +1628,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 28,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   void_rift_golem: {
@@ -1558,6 +1655,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 42,
     isBoss: false,
     spawnWeight: 18,
+    archetype: 'melee',
+    abilities: [],
   },
 
   void_rift_leech: {
@@ -1583,6 +1682,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 34,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   void_rift_bender: {
@@ -1607,6 +1708,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 36,
     isBoss: false,
     spawnWeight: 25,
+    archetype: 'melee',
+    abilities: [],
   },
 
   void_rift_wraith: {
@@ -1632,6 +1735,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 36,
     isBoss: false,
     spawnWeight: 18,
+    archetype: 'melee',
+    abilities: [],
   },
 
   void_rift_horror: {
@@ -1656,6 +1761,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 40,
     isBoss: false,
     spawnWeight: 20,
+    archetype: 'melee',
+    abilities: [],
   },
 
   void_rift_titan: {
@@ -1682,6 +1789,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 44,
     isBoss: false,
     spawnWeight: 15,
+    archetype: 'melee',
+    abilities: [],
   },
 
   boss_xaltheron: {
@@ -1709,6 +1818,8 @@ export const MONSTERS: Record<string, MonsterDefinition> = {
     size: 64,
     isBoss: true,
     spawnWeight: 0,
+    archetype: 'melee',
+    abilities: [],
   },
 };
 

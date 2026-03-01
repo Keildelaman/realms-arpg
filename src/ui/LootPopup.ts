@@ -7,17 +7,19 @@ import type { ItemInstance } from '@/core/types';
 import { on } from '@/core/event-bus';
 import {
   GAME_WIDTH,
-  GAME_HEIGHT,
   RARITY_COLORS,
   COLORS,
 } from '@/data/constants';
+import { formatAffixValue, formatAffixName } from '@/ui/item-format';
 
 const POPUP_WIDTH = 220;
 const POPUP_HEIGHT = 70;
 const POPUP_MARGIN = 16;
 const POPUP_LIFETIME = 3.0;
 const SLIDE_DURATION = 200; // ms for slide-in animation
-const FADE_START = 2.2; // start fading at this lifetime
+const FADE_START = 2.2;     // start fading at this lifetime remaining
+const MAX_POPUPS = 4;
+const MAX_NAME_LENGTH = 22;
 
 interface LootPopupDisplay {
   container: Phaser.GameObjects.Container;
@@ -37,10 +39,8 @@ export class LootPopupManager {
     this.baseX = (scene.scale.width || GAME_WIDTH) - POPUP_WIDTH - POPUP_MARGIN;
     this.baseY = 180; // Below minimap area
 
-    // Subscribe to item pickup events
     on('item:pickedUp', this.onItemPickedUp);
 
-    // Handle resize
     scene.scale.on('resize', this.onResize);
   }
 
@@ -54,11 +54,20 @@ export class LootPopupManager {
 
   /**
    * Create a new loot popup card.
+   * Evicts the oldest popup if MAX_POPUPS is reached.
    */
   spawn(item: ItemInstance): void {
-    // Push existing popups down
+    // Evict oldest popup if at cap
+    if (this.popups.length >= MAX_POPUPS) {
+      const oldest = this.popups.shift()!;
+      oldest.container.destroy();
+    }
+
+    // Push existing popups down (clamped to screen)
+    const sceneHeight = this.scene.scale.height;
     for (const popup of this.popups) {
       popup.targetY += POPUP_HEIGHT + 6;
+      popup.targetY = Math.min(popup.targetY, sceneHeight - POPUP_HEIGHT - 20);
     }
 
     const container = this.scene.add.container(
@@ -85,10 +94,15 @@ export class LootPopupManager {
 
     container.add(bg);
 
-    // Item name in rarity color
-    const nameText = this.scene.add.text(14, 8, item.name, {
+    // Item name in rarity color (truncated if needed)
+    const rawName = item.name;
+    const displayName = rawName.length > MAX_NAME_LENGTH
+      ? rawName.substring(0, MAX_NAME_LENGTH - 3) + '...'
+      : rawName;
+
+    const nameText = this.scene.add.text(14, 8, displayName, {
       fontFamily: 'monospace',
-      fontSize: '14px',
+      fontSize: '13px',
       color: rarityColorHex,
       stroke: '#000000',
       strokeThickness: 2,
@@ -104,11 +118,13 @@ export class LootPopupManager {
     });
     container.add(slotText);
 
-    // Key affixes (show first 2)
+    // Key affixes (show first 2, formatted)
     const affixStrings: string[] = [];
     for (let i = 0; i < Math.min(2, item.affixes.length); i++) {
       const affix = item.affixes[i];
-      affixStrings.push(`+${affix.value} ${affix.id.replace(/_/g, ' ')}`);
+      affixStrings.push(
+        `${formatAffixValue(affix.id, affix.value)} ${formatAffixName(affix.id)}`
+      );
     }
     if (item.affixes.length > 2) {
       affixStrings.push(`+${item.affixes.length - 2} more...`);

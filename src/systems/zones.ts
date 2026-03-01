@@ -28,7 +28,15 @@ import {
   ARMOR_DEFAULT,
   SHIELD_PERCENT_DEFAULT,
   SHIELD_DAMAGE_REDUCTION,
+  RARE_MINION_SPAWN_RADIUS,
 } from '@/data/constants';
+import {
+  rollMonsterRarity,
+  rollAffixes,
+  rollMinionCount,
+  applyRarityScaling,
+  buildRarityName,
+} from '@/systems/monster-rarity';
 import {
   monsterHP,
   monsterXPReward,
@@ -108,7 +116,7 @@ export function spawnMonster(zoneId?: string): MonsterInstance | null {
   const zone = ZONES[zoneId ?? state.activeZoneId];
   if (!zone) return null;
 
-  // Check monster cap
+  // Check monster cap (allow up to 4 overflow for rare minion packs)
   const aliveMonsters = state.monsters.filter(m => !m.isDead);
   if (aliveMonsters.length >= MAX_MONSTERS_PER_ZONE) return null;
 
@@ -155,6 +163,22 @@ export function spawnMonster(zoneId?: string): MonsterInstance | null {
 
   // Emit event
   emit('monster:spawned', { monster });
+
+  // Spawn minion pack for rare monsters
+  if (monster.rarity === 'rare') {
+    const minionCount = rollMinionCount('rare');
+    for (let i = 0; i < minionCount; i++) {
+      // Cluster minions around the rare monster
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.random() * RARE_MINION_SPAWN_RADIUS;
+      const minionX = monster.x + Math.cos(angle) * dist;
+      const minionY = monster.y + Math.sin(angle) * dist;
+
+      const minion = createMonsterInstance(selectedDef, level, minionX, minionY, zone.id, 'normal');
+      addMonster(minion);
+      emit('monster:spawned', { monster: minion });
+    }
+  }
 
   return monster;
 }
@@ -216,6 +240,7 @@ function createMonsterInstance(
   x: number,
   y: number,
   zoneId: string,
+  forceRarity?: 'normal',
 ): MonsterInstance {
   const hp = monsterHP(def.baseHP, def.hpPerLevel, level);
   const shieldAmount = def.shieldPercent
@@ -224,7 +249,13 @@ function createMonsterInstance(
 
   const id = `monster_${nextMonsterId++}`;
 
-  return {
+  // Initialize ability cooldowns (all start ready)
+  const abilityCooldowns: Record<string, number> = {};
+  for (const abilityId of def.abilities) {
+    abilityCooldowns[abilityId] = 0;
+  }
+
+  const instance: MonsterInstance = {
     id,
     definitionId: def.id,
     name: def.name,
@@ -272,7 +303,47 @@ function createMonsterInstance(
     gold: monsterGoldReward(def.gold, level),
     dropChance: def.dropChance,
     zone: zoneId,
+
+    // New fields
+    archetype: def.archetype,
+    rarity: 'normal',
+    affixes: [],
+    abilityCooldowns,
+    currentAbility: null,
+    abilityCastTimer: 0,
+    abilityTargetX: 0,
+    abilityTargetY: 0,
+    isCharging: false,
+    chargeTargetX: 0,
+    chargeTargetY: 0,
+    chargeTimer: 0,
+    isFused: false,
+    fuseTimer: 0,
+    isRetreating: false,
+    shape: def.shape ?? 'square',
   };
+
+  // Roll rarity (unless forced to normal, e.g., for minions)
+  if (forceRarity !== 'normal') {
+    const zone = ZONES[zoneId];
+    const tier = zone?.tier ?? 1;
+    const rarity = rollMonsterRarity(tier, def.isBoss, def.archetype);
+    instance.rarity = rarity;
+
+    if (rarity !== 'normal') {
+      const affixIds = rollAffixes(rarity);
+      applyRarityScaling(instance, rarity, affixIds);
+      instance.name = buildRarityName(def.name, rarity, affixIds);
+
+      emit('monster:raritySpawned', {
+        monsterId: instance.id,
+        rarity,
+        affixes: affixIds,
+      });
+    }
+  }
+
+  return instance;
 }
 
 // --- Spawn positioning ---

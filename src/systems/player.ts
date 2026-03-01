@@ -246,7 +246,7 @@ export function recalculateStats(): void {
 
 /**
  * Accumulate an item's affix contributions into flat and percent modifier objects.
- * Affix IDs use conventions to map to stat categories.
+ * Affix IDs match the snake_case keys defined in affixes.data.ts.
  */
 function accumulateItemModifiers(
   item: ItemInstance,
@@ -257,32 +257,39 @@ function accumulateItemModifiers(
     const id = affix.id;
     const val = affix.value;
 
-    // Map affix IDs to stat modifiers
-    // Flat affixes (no 'Percent' suffix)
-    if (id === 'flatAttack') flat.flatAttack += val;
-    else if (id === 'flatDefense') flat.flatDefense += val;
-    else if (id === 'flatMagicPower') flat.flatMagicPower += val;
-    else if (id === 'flatMaxHP') flat.flatMaxHP += val;
-    else if (id === 'flatMoveSpeed') flat.flatMoveSpeed += val;
-    else if (id === 'flatCritChance') flat.flatCritChance += val;
-    else if (id === 'flatCritDamage') flat.flatCritDamage += val;
-    else if (id === 'flatAttackSpeed') flat.flatAttackSpeed += val;
-    else if (id === 'flatBleedChance') flat.flatBleedChance += val;
-    else if (id === 'flatPoisonChance') flat.flatPoisonChance += val;
-    else if (id === 'flatBurnChance') flat.flatBurnChance += val;
-    else if (id === 'flatSlowChance') flat.flatSlowChance += val;
-    else if (id === 'flatFreezeChance') flat.flatFreezeChance += val;
-    else if (id === 'flatStatusPotency') flat.flatStatusPotency += val;
-    // Percent affixes
-    else if (id === 'percentAttack') percent.percentAttack += val;
-    else if (id === 'percentDefense') percent.percentDefense += val;
-    else if (id === 'percentMagicPower') percent.percentMagicPower += val;
-    else if (id === 'percentMaxHP') percent.percentMaxHP += val;
-    else if (id === 'percentMoveSpeed') percent.percentMoveSpeed += val;
-    else if (id === 'percentCritChance') percent.percentCritChance += val;
-    else if (id === 'percentCritDamage') percent.percentCritDamage += val;
-    else if (id === 'percentAttackSpeed') percent.percentAttackSpeed += val;
-    // HP regen and energy regen are handled by health.ts and energy.ts directly
+    // --- Flat affixes (backed by flatValues[] in affixes.data.ts) ---
+    if (id === 'flat_attack') flat.flatAttack += val;
+    else if (id === 'flat_defense') flat.flatDefense += val;
+    else if (id === 'flat_magic_power') flat.flatMagicPower += val;
+    else if (id === 'flat_max_hp') flat.flatMaxHP += val;
+
+    // --- Critical stats (percentValues but added directly, not as a multiplier) ---
+    else if (id === 'crit_chance') flat.flatCritChance += val;
+    else if (id === 'crit_damage') flat.flatCritDamage += val;
+
+    // --- Speed stats (percentValues, used as multiplicative bonus) ---
+    else if (id === 'attack_speed') percent.percentAttackSpeed += val;
+    else if (id === 'move_speed') percent.percentMoveSpeed += val;
+
+    // --- Status chance affixes (percentValues, added directly to chance fields) ---
+    else if (id === 'bleed_chance') flat.flatBleedChance += val;
+    else if (id === 'poison_chance') flat.flatPoisonChance += val;
+    else if (id === 'burn_chance') flat.flatBurnChance += val;
+    else if (id === 'slow_chance') flat.flatSlowChance += val;
+    else if (id === 'freeze_chance') flat.flatFreezeChance += val;
+
+    // --- Status potency affixes (all contribute to statusPotency multiplier) ---
+    else if (
+      id === 'bleed_potency' ||
+      id === 'poison_potency' ||
+      id === 'burn_potency' ||
+      id === 'slow_potency' ||
+      id === 'freeze_potency'
+    ) flat.flatStatusPotency += val;
+
+    // Note: armor_penetration, hp_regen, dodge_chance, damage_reduction,
+    // energy_regen, gold_find, xp_bonus, skill_*_boost, skill_*_level
+    // are not yet wired into StatModifiers and are intentionally skipped here.
   }
 }
 

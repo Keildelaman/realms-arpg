@@ -24,6 +24,12 @@ import {
   ATTACK_WINDUP_DURATION,
   ATTACK_SWING_DURATION,
   ATTACK_FOLLOW_THROUGH_DURATION,
+  PLAYER_BODY_RADIUS,
+  MONSTER_PROJECTILE_PLAYER_KNOCKBACK,
+  AFFIX_VAMPIRIC_LEECH,
+  AFFIX_FROST_NOVA_RADIUS,
+  AFFIX_FROST_NOVA_SLOW_DURATION,
+  AFFIX_FROST_NOVA_DAMAGE_MULT,
 } from '@/data/constants';
 import { calculateDamage, deathMilestoneLevel } from '@/data/balance';
 
@@ -399,7 +405,102 @@ function onPlayerAttack(data: { angle: number; skillId?: string }): void {
 }
 
 function onMonsterAttack(data: { monsterId: string; damage: number }): void {
+  const monster = getMonsterById(data.monsterId);
+
+  // Vampiric affix: heal monster for 15% of damage dealt
+  if (monster && !monster.isDead && monster.affixes.some(a => a.id === 'vampiric')) {
+    const healAmount = Math.floor(data.damage * AFFIX_VAMPIRIC_LEECH);
+    if (healAmount > 0) {
+      monster.currentHP = Math.min(monster.maxHP, monster.currentHP + healAmount);
+      emit('affix:vampiricHeal', { monsterId: data.monsterId, amount: healAmount });
+    }
+  }
+
   damagePlayer(data.damage, data.monsterId);
+}
+
+function onMonsterDiedCombat(data: {
+  monsterId: string;
+  x: number;
+  y: number;
+  xp: number;
+  gold: number;
+  isBoss: boolean;
+}): void {
+  const monster = getMonsterById(data.monsterId);
+  if (!monster) return;
+
+  // Frost nova affix: on-death AoE damage + slow
+  if (monster.affixes.some(a => a.id === 'frost_nova')) {
+    const player = getPlayer();
+    const dx = player.x - data.x;
+    const dy = player.y - data.y;
+    const distToPlayer = Math.sqrt(dx * dx + dy * dy);
+
+    if (distToPlayer <= AFFIX_FROST_NOVA_RADIUS) {
+      const damage = Math.floor(monster.attack * AFFIX_FROST_NOVA_DAMAGE_MULT);
+      damagePlayer(damage, `frost_nova_${data.monsterId}`);
+
+      // Apply slow status to player (handled by status effect system via event)
+      emit('affix:frostNova', {
+        x: data.x,
+        y: data.y,
+        radius: AFFIX_FROST_NOVA_RADIUS,
+      });
+    }
+  }
+
+}
+
+/**
+ * Check monster projectiles against the player.
+ * Called each frame from update().
+ */
+function checkMonsterProjectileHits(): void {
+  const state = getState();
+  const player = getPlayer();
+
+  for (const proj of state.projectiles) {
+    if (proj.isExpired) continue;
+    if (proj.ownerId === 'player') continue;
+
+    // Distance check: projectile vs player
+    const dx = proj.x - player.x;
+    const dy = proj.y - player.y;
+    const distSq = dx * dx + dy * dy;
+    const hitRadius = PLAYER_BODY_RADIUS + proj.size;
+
+    if (distSq <= hitRadius * hitRadius) {
+      // Hit the player
+      const actualDamage = damagePlayer(proj.damage, proj.ownerId);
+
+      // Apply knockback in projectile direction
+      if (actualDamage > 0) {
+        const dist = Math.sqrt(proj.velocityX * proj.velocityX + proj.velocityY * proj.velocityY);
+        if (dist > 0) {
+          player.x += (proj.velocityX / dist) * MONSTER_PROJECTILE_PLAYER_KNOCKBACK;
+          player.y += (proj.velocityY / dist) * MONSTER_PROJECTILE_PLAYER_KNOCKBACK;
+        }
+      }
+
+      // Vampiric affix on projectile owner
+      const ownerMonster = getMonsterById(proj.ownerId);
+      if (ownerMonster && !ownerMonster.isDead && ownerMonster.affixes.some(a => a.id === 'vampiric')) {
+        const healAmount = Math.floor(proj.damage * AFFIX_VAMPIRIC_LEECH);
+        if (healAmount > 0) {
+          ownerMonster.currentHP = Math.min(ownerMonster.maxHP, ownerMonster.currentHP + healAmount);
+          emit('affix:vampiricHeal', { monsterId: proj.ownerId, amount: healAmount });
+        }
+      }
+
+      // Mark projectile as hit
+      if (!proj.piercing) {
+        proj.isExpired = true;
+        emit('projectile:expired', { projectileId: proj.id });
+      }
+      proj.hitTargets.push('player');
+    }
+  }
 }
 
 // --- Lifecycle ---
@@ -411,6 +512,7 @@ export function init(): void {
 
   on('combat:playerAttack', onPlayerAttack);
   on('combat:monsterAttack', onMonsterAttack);
+  on('monster:died', onMonsterDiedCombat);
 }
 
 export function update(dt: number): void {
@@ -465,4 +567,7 @@ export function update(dt: number): void {
       player.isInvulnerable = false;
     }
   }
+
+  // --- Check monster projectile hits ---
+  checkMonsterProjectileHits();
 }

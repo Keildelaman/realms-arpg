@@ -3,7 +3,7 @@
 // ============================================================================
 
 import Phaser from 'phaser';
-import type { MonsterInstance, DamageType } from '@/core/types';
+import type { MonsterInstance, DamageType, MonsterRarity } from '@/core/types';
 import { getMonsterById } from '@/core/game-state';
 import { on, off } from '@/core/event-bus';
 import {
@@ -42,25 +42,68 @@ export class MonsterEntity {
     this.scene = scene;
     this.monsterId = monster.id;
 
-    // Create a dynamically colored texture for this monster
-    this.textureKey = `monster_${monster.definitionId}`;
+    // Create a dynamically colored texture for this monster based on shape
+    const sizeMult = monster.rarity === 'rare' ? 1.3 : monster.rarity === 'magic' ? 1.15 : 1.0;
+    const effectiveSize = Math.floor(monster.size * sizeMult);
+    this.textureKey = `monster_${monster.definitionId}_${monster.shape ?? 'square'}_${monster.rarity}`;
     if (!scene.textures.exists(this.textureKey)) {
       const gfx = scene.add.graphics();
       const colorNum = Phaser.Display.Color.HexStringToColor(monster.color).color;
       gfx.fillStyle(colorNum, 1);
-      gfx.fillRect(0, 0, monster.size, monster.size);
-      gfx.generateTexture(this.textureKey, monster.size, monster.size);
+
+      const half = effectiveSize / 2;
+      switch (monster.shape) {
+        case 'circle':
+          gfx.fillCircle(half, half, half);
+          break;
+        case 'diamond':
+          gfx.beginPath();
+          gfx.moveTo(half, 0);
+          gfx.lineTo(effectiveSize, half);
+          gfx.lineTo(half, effectiveSize);
+          gfx.lineTo(0, half);
+          gfx.closePath();
+          gfx.fillPath();
+          break;
+        case 'triangle':
+          gfx.beginPath();
+          gfx.moveTo(half, 0);
+          gfx.lineTo(effectiveSize, effectiveSize);
+          gfx.lineTo(0, effectiveSize);
+          gfx.closePath();
+          gfx.fillPath();
+          break;
+        case 'hexagon': {
+          gfx.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const angle = (Math.PI / 3) * i - Math.PI / 6;
+            const px = half + Math.cos(angle) * half;
+            const py = half + Math.sin(angle) * half;
+            if (i === 0) gfx.moveTo(px, py);
+            else gfx.lineTo(px, py);
+          }
+          gfx.closePath();
+          gfx.fillPath();
+          break;
+        }
+        case 'square':
+        default:
+          gfx.fillRect(0, 0, effectiveSize, effectiveSize);
+          break;
+      }
+
+      gfx.generateTexture(this.textureKey, effectiveSize, effectiveSize);
       gfx.destroy();
     }
 
     // Create sprite at monster position
     this.sprite = scene.physics.add.sprite(monster.x, monster.y, this.textureKey);
-    this.sprite.setDisplaySize(monster.size, monster.size);
+    this.sprite.setDisplaySize(effectiveSize, effectiveSize);
     this.sprite.setDepth(5);
 
     // Set up physics body
     const body = this.sprite.body as Phaser.Physics.Arcade.Body;
-    body.setSize(monster.size, monster.size);
+    body.setSize(effectiveSize, effectiveSize);
     body.setImmovable(false);
 
     // Create HP bar background
@@ -77,20 +120,26 @@ export class MonsterEntity {
       this.shieldBar.setDepth(16);
     }
 
-    // If boss, create name text
-    if (monster.isBoss) {
+    // Nameplate for boss, magic, or rare monsters
+    const showNameplate = monster.isBoss || monster.rarity === 'magic' || monster.rarity === 'rare';
+    if (showNameplate) {
+      const nameColor = monster.isBoss ? '#ffdd44'
+        : monster.rarity === 'rare' ? '#fbbf24'
+        : '#60a5fa';
       this.nameText = scene.add.text(monster.x, monster.y, monster.name, {
         fontFamily: 'monospace',
         fontSize: '11px',
-        color: '#ffdd44',
+        color: nameColor,
         stroke: '#000000',
         strokeThickness: 2,
       });
       this.nameText.setOrigin(0.5, 1);
       this.nameText.setDepth(17);
+    }
 
-      // Make boss sprites slightly bigger visually
-      this.sprite.setDisplaySize(monster.size * 1.3, monster.size * 1.3);
+    // Make boss sprites bigger visually
+    if (monster.isBoss) {
+      this.sprite.setDisplaySize(effectiveSize * 1.3, effectiveSize * 1.3);
     }
 
     // Draw initial HP bar
@@ -146,11 +195,32 @@ export class MonsterEntity {
       this.applyStatusTint(monster);
     }
 
+    // Rarity alpha pulse (when not hit-flashing)
+    if (this.hitFlashTimer <= 0 && !monster.isWindingUp) {
+      if (monster.rarity === 'magic') {
+        const pulse = 0.85 + Math.sin(Date.now() * 0.008) * 0.15;
+        this.sprite.setAlpha(pulse);
+      } else if (monster.rarity === 'rare') {
+        const pulse = 0.85 + Math.sin(Date.now() * 0.012) * 0.15;
+        this.sprite.setAlpha(pulse);
+      }
+    }
+
+    // Fuse pulsing for exploders
+    if (monster.isFused && this.hitFlashTimer <= 0) {
+      const fuseFlash = Math.sin(Date.now() * 0.03) > 0;
+      this.sprite.setTint(fuseFlash ? 0xff0000 : 0xff6600);
+    }
+
+    // Charge visual for chargers
+    if (monster.isCharging && this.hitFlashTimer <= 0) {
+      this.sprite.setTint(0xffaa00);
+    }
+
     // Windup indicator for all monsters
     const isFrozen = monster.statusEffects.some(e => e.type === 'freeze');
     if (monster.isWindingUp && !isFrozen) {
       this.showWindupIndicator(monster);
-      // Scale up and tint red during windup
       const baseScale = monster.isBoss ? 1.3 : 1.0;
       this.sprite.setScale(baseScale * 1.15);
       if (this.hitFlashTimer <= 0) {
@@ -161,9 +231,9 @@ export class MonsterEntity {
         this.windupIndicator.destroy();
         this.windupIndicator = null;
       }
-      // Reset scale when not winding up
+      const sizeMult = monster.rarity === 'rare' ? 1.3 : monster.rarity === 'magic' ? 1.15 : 1.0;
       const baseScale = monster.isBoss ? 1.3 : 1.0;
-      const displaySize = monster.size * baseScale;
+      const displaySize = monster.size * sizeMult * baseScale;
       this.sprite.setDisplaySize(displaySize, displaySize);
       this.sprite.setScale(baseScale);
     }

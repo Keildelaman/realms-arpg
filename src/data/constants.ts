@@ -136,6 +136,71 @@ export const ARMOR_DEFAULT = 10;
 export const SHIELD_PERCENT_DEFAULT = 0.3;     // 30% of max HP
 export const SHIELD_DAMAGE_REDUCTION = 0.5;    // 50% while shield up
 
+// --- Monster Rarity ---
+export const MONSTER_MAGIC_BASE_CHANCE = 0.12;
+export const MONSTER_RARE_BASE_CHANCE = 0.03;
+export const MONSTER_RARITY_TIER_SCALING = 0.015;
+
+// --- Monster Rarity Stat Scaling ---
+export const MAGIC_HP_MULT = 1.5;
+export const MAGIC_DAMAGE_MULT = 1.2;
+export const MAGIC_DEFENSE_MULT = 1.2;
+export const MAGIC_XP_MULT = 2.0;
+export const MAGIC_GOLD_MULT = 2.0;
+export const MAGIC_DROP_CHANCE_MULT = 2.0;
+export const MAGIC_DROP_RARITY_BOOST = 1;
+export const MAGIC_AFFIX_COUNT = 1;
+
+export const RARE_HP_MULT = 3.0;
+export const RARE_DAMAGE_MULT = 1.8;
+export const RARE_DEFENSE_MULT = 1.5;
+export const RARE_XP_MULT = 5.0;
+export const RARE_GOLD_MULT = 5.0;
+export const RARE_DROP_CHANCE_MULT = 4.0;
+export const RARE_DROP_RARITY_BOOST = 2;
+export const RARE_AFFIX_COUNT_MIN = 2;
+export const RARE_AFFIX_COUNT_MAX = 3;
+export const RARE_MINION_COUNT_MIN = 2;
+export const RARE_MINION_COUNT_MAX = 4;
+export const RARE_MINION_SPAWN_RADIUS = 80;
+
+// --- Archetype Defaults ---
+export const RANGED_DEFAULT_PREFERRED_RANGE = 250;
+export const RANGED_RETREAT_THRESHOLD_RATIO = 0.5;
+export const RANGED_DEFAULT_RETREAT_SPEED_RATIO = 0.7;
+
+export const CASTER_DEFAULT_PREFERRED_RANGE = 280;
+export const CASTER_DEFAULT_RETREAT_SPEED_RATIO = 0.6;
+
+export const CHARGER_DEFAULT_WINDUP = 0.8;
+export const CHARGER_DEFAULT_SPEED = 500;
+export const CHARGER_DEFAULT_DAMAGE_MULT = 2.0;
+export const CHARGER_DEFAULT_DISTANCE = 350;
+export const CHARGER_ACTIVATION_RANGE = 350;
+export const CHARGER_COOLDOWN = 4.0;
+export const CHARGER_RECOVERY_DURATION = 1.0;
+
+export const EXPLODER_DEFAULT_FUSE_TIME = 1.2;
+export const EXPLODER_DEFAULT_RADIUS = 80;
+export const EXPLODER_DEFAULT_DAMAGE_MULT = 2.5;
+export const EXPLODER_FUSE_ACTIVATION_RANGE = 60;
+export const EXPLODER_DEATH_DAMAGE_RATIO = 0.5;
+
+// --- Affix Constants ---
+export const AFFIX_TELEPORT_COOLDOWN = 5.0;
+export const AFFIX_TELEPORT_RANGE = 400;
+export const AFFIX_TELEPORT_OFFSET = 150;
+export const AFFIX_VAMPIRIC_LEECH = 0.15;
+export const AFFIX_FRENZY_AURA_RADIUS = 150;
+export const AFFIX_FRENZY_DAMAGE_MULT = 1.2;
+export const AFFIX_FRENZY_ATTACK_SPEED_MULT = 1.15;
+export const AFFIX_FROST_NOVA_RADIUS = 100;
+export const AFFIX_FROST_NOVA_SLOW_DURATION = 2.0;
+export const AFFIX_FROST_NOVA_DAMAGE_MULT = 0.5;
+
+// --- Monster Projectile ---
+export const MONSTER_PROJECTILE_PLAYER_KNOCKBACK = 8;
+
 // --- Status Effects ---
 export const BLEED_MAX_STACKS = 5;
 export const BLEED_DURATION = 4.0;
