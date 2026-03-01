@@ -2,6 +2,8 @@
 // Game Constants — All tuning numbers in one place
 // ============================================================================
 
+import type { EquipmentSlot, AffixCategory, Rarity } from '@/core/types';
+
 // --- Display ---
 export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;
@@ -68,12 +70,21 @@ export const EQUIPMENT_SLOTS: readonly string[] = [
   'weapon', 'helmet', 'chest', 'gloves', 'boots', 'accessory',
 ] as const;
 
-export const RARITY_AFFIX_COUNTS: Record<string, [number, number]> = {
-  common:    [1, 1],
-  uncommon:  [1, 2],
-  rare:      [2, 3],
-  epic:      [3, 4],
-  legendary: [4, 5],
+// Max affix count per rarity (fixed). Use RARITY_MAX_MINUS_ONE_CHANCE
+// to determine when to roll (max - 1) instead.
+export const RARITY_AFFIX_COUNTS: Record<Rarity, number> = {
+  common:    1,
+  uncommon:  2,
+  rare:      3,
+  epic:      4,
+  legendary: 4,
+};
+
+// Probability of rolling (max - 1) affixes instead of max, per rarity
+export const RARITY_MAX_MINUS_ONE_CHANCE: Partial<Record<Rarity, number>> = {
+  uncommon: 0.40,
+  rare:     0.50,
+  epic:     0.60,
 };
 
 export const RARITY_WEIGHTS: Record<string, number> = {
@@ -186,6 +197,37 @@ export const EXPLODER_DEFAULT_DAMAGE_MULT = 2.5;
 export const EXPLODER_FUSE_ACTIVATION_RANGE = 60;
 export const EXPLODER_DEATH_DAMAGE_RATIO = 0.5;
 
+// --- Item Affix Generation ---
+
+// 2-tier probability: category chosen first (per slot), then affix within category
+export const SLOT_CATEGORY_WEIGHTS: Record<EquipmentSlot, Record<AffixCategory, number>> = {
+  weapon:    { offensive: 45, defensive: 5,  utility: 5,  statusChance: 20, statusPotency: 15, skillPower: 5,  skillLevel: 5  },
+  helmet:    { offensive: 10, defensive: 35, utility: 20, statusChance: 10, statusPotency: 10, skillPower: 10, skillLevel: 5  },
+  chest:     { offensive: 5,  defensive: 50, utility: 15, statusChance: 10, statusPotency: 10, skillPower: 5,  skillLevel: 5  },
+  gloves:    { offensive: 30, defensive: 10, utility: 10, statusChance: 25, statusPotency: 15, skillPower: 5,  skillLevel: 5  },
+  boots:     { offensive: 5,  defensive: 20, utility: 45, statusChance: 10, statusPotency: 10, skillPower: 5,  skillLevel: 5  },
+  accessory: { offensive: 15, defensive: 20, utility: 20, statusChance: 15, statusPotency: 15, skillPower: 10, skillLevel: 5  },
+};
+
+// Affix group ID sets for validation rules
+export const STATUS_AFFIX_IDS = new Set([
+  'bleed_chance', 'poison_chance', 'burn_chance', 'slow_chance', 'freeze_chance',
+  'bleed_potency', 'poison_potency', 'burn_potency', 'slow_potency', 'freeze_potency',
+]);
+export const SKILL_LEVEL_AFFIX_IDS = new Set([
+  'skill_power_level', 'skill_speed_level', 'skill_crit_level',
+  'skill_mage_level', 'skill_utility_level', 'skill_all_level',
+]);
+export const SKILL_BOOST_AFFIX_IDS = new Set([
+  'skill_power_boost', 'skill_speed_boost', 'skill_crit_boost',
+  'skill_mage_boost', 'skill_utility_boost',
+]);
+
+// Validation limits for affix selection
+export const MAX_STATUS_AFFIXES_PER_ITEM = 2;
+export const MAX_SKILL_LEVEL_AFFIXES_PER_ITEM = 1;
+export const AFFIX_REROLL_MAX_ATTEMPTS = 10;
+
 // --- Affix Constants ---
 export const AFFIX_TELEPORT_COOLDOWN = 5.0;
 export const AFFIX_TELEPORT_RANGE = 400;
@@ -197,6 +239,13 @@ export const AFFIX_FRENZY_ATTACK_SPEED_MULT = 1.15;
 export const AFFIX_FROST_NOVA_RADIUS = 100;
 export const AFFIX_FROST_NOVA_SLOW_DURATION = 2.0;
 export const AFFIX_FROST_NOVA_DAMAGE_MULT = 0.5;
+
+// --- Monster Wander ---
+export const MONSTER_WANDER_RADIUS = 80;
+export const MONSTER_WANDER_SPEED_RATIO = 0.35;
+export const MONSTER_WANDER_PAUSE_MIN = 1.5;
+export const MONSTER_WANDER_PAUSE_MAX = 4.0;
+export const MONSTER_WANDER_ARRIVAL_DIST = 8;
 
 // --- Monster Projectile ---
 export const MONSTER_PROJECTILE_PLAYER_KNOCKBACK = 8;

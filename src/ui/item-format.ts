@@ -5,7 +5,7 @@
 
 /**
  * Affix IDs that use flat (integer) values rather than percentages.
- * These are affixes backed by flatValues[] in affixes.data.ts.
+ * These are affixes with scaleType: 'flat' in affixes.data.ts.
  */
 const FLAT_AFFIX_IDS = new Set([
   'flat_attack',

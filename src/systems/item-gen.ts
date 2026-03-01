@@ -8,13 +8,23 @@ import type {
   EquipmentSlot,
   Rarity,
   AffixDefinition,
+  AffixCategory,
 } from '@/core/types';
 import {
   RARITY_WEIGHTS,
   RARITY_AFFIX_COUNTS,
+  RARITY_MAX_MINUS_ONE_CHANCE,
   EQUIPMENT_SLOTS,
+  TIER_FLAT_MULTIPLIERS,
+  TIER_PERCENT_MULTIPLIERS,
+  SLOT_CATEGORY_WEIGHTS,
+  STATUS_AFFIX_IDS,
+  SKILL_LEVEL_AFFIX_IDS,
+  MAX_STATUS_AFFIXES_PER_ITEM,
+  MAX_SKILL_LEVEL_AFFIXES_PER_ITEM,
+  AFFIX_REROLL_MAX_ATTEMPTS,
 } from '@/data/constants';
-import { AFFIXES } from '@/data/affixes.data';
+import { AFFIXES, AFFIXES_BY_CATEGORY } from '@/data/affixes.data';
 import { LEGENDARIES } from '@/data/legendaries.data';
 import { generateItemName } from '@/data/item-names.data';
 
@@ -30,7 +40,6 @@ function generateId(): string {
 
 /**
  * Roll a rarity based on the RARITY_WEIGHTS distribution.
- * Uses weighted random selection.
  */
 function rollRarity(): Rarity {
   const entries = Object.entries(RARITY_WEIGHTS);
@@ -44,20 +53,15 @@ function rollRarity(): Rarity {
     }
   }
 
-  // Fallback (should never reach here)
   return 'common';
 }
 
 /**
  * Roll rarity with a bonus weight shift toward higher rarities.
- * Used for shop items and boss drops.
- *
- * @param bonusTier - 0 for normal, 1+ shifts weights toward rare+
  */
 function rollRarityWithBonus(bonusTier: number): Rarity {
   if (bonusTier <= 0) return rollRarity();
 
-  // Shift weights: reduce common/uncommon, increase rare+
   const adjusted: Record<string, number> = { ...RARITY_WEIGHTS };
   const shift = bonusTier * 10;
 
@@ -105,110 +109,157 @@ function rollSlot(): EquipmentSlot {
   return EQUIPMENT_SLOTS[idx] as EquipmentSlot;
 }
 
-// --- Affix selection ---
+// --- Weighted random helper ---
 
 /**
- * Select affixes for an item, weighted by slot preference.
- * Ensures no duplicate affixes on the same item.
- *
- * @param count   - number of affixes to pick
- * @param slot    - equipment slot (affects affix weighting)
- * @param exclude - affix IDs to exclude (for preventing duplicates)
- * @returns selected affix definitions
+ * Pick a key from a weight map using weighted random selection.
  */
-function selectAffixes(
-  count: number,
-  slot: EquipmentSlot,
-  exclude: Set<string> = new Set(),
-): AffixDefinition[] {
-  const selected: AffixDefinition[] = [];
-  const used = new Set(exclude);
+function weightedRandom(weights: Record<string, number>): string {
+  const entries = Object.entries(weights);
+  const total = entries.reduce((sum, [, w]) => sum + w, 0);
+  let roll = Math.random() * total;
 
-  for (let i = 0; i < count; i++) {
-    // Build weighted pool of available affixes
-    const available = Object.values(AFFIXES).filter(a => !used.has(a.id));
-    if (available.length === 0) break;
-
-    // Weight by slot preference
-    const weights = available.map(a => a.slotWeights[slot] || 1);
-    const totalWeight = weights.reduce((a, b) => a + b, 0);
-
-    if (totalWeight <= 0) break;
-
-    let roll = Math.random() * totalWeight;
-    let picked: AffixDefinition | null = null;
-
-    for (let j = 0; j < available.length; j++) {
-      roll -= weights[j];
-      if (roll <= 0) {
-        picked = available[j];
-        break;
-      }
-    }
-
-    if (!picked) picked = available[available.length - 1];
-
-    selected.push(picked);
-    used.add(picked.id);
+  for (const [key, weight] of entries) {
+    roll -= weight;
+    if (roll <= 0) return key;
   }
 
-  return selected;
+  // Fallback to last key
+  return entries[entries.length - 1][0];
 }
 
+// --- Affix validation ---
+
 /**
- * Roll an affix value within the tier range, with +/-15% variance.
- * Uses whichever value source (flatValues or percentValues) is non-zero.
+ * Validate whether an affix can be added to an item given existing affixes.
+ * Rules:
+ *   1. No exact duplicate IDs
+ *   2. Max 2 status affixes total (chance + potency combined)
+ *   3. Max 1 skill level affix
+ */
+function validateAffix(affixId: string, existing: AffixInstance[]): boolean {
+  // Rule 1: no exact duplicate
+  if (existing.some(a => a.id === affixId)) return false;
+
+  // Rule 2: max 2 status affixes (chance + potency combined)
+  if (STATUS_AFFIX_IDS.has(affixId)) {
+    if (existing.filter(a => STATUS_AFFIX_IDS.has(a.id)).length >= MAX_STATUS_AFFIXES_PER_ITEM) {
+      return false;
+    }
+  }
+
+  // Rule 3: max 1 skill level affix
+  if (SKILL_LEVEL_AFFIX_IDS.has(affixId)) {
+    if (existing.some(a => SKILL_LEVEL_AFFIX_IDS.has(a.id))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// --- Affix rolling ---
+
+/**
+ * Roll one affix for the given slot using 2-tier weighted selection.
+ * Tier 1: pick category by SLOT_CATEGORY_WEIGHTS[slot]
+ * Tier 2: pick specific affix by within-category weight
+ * Retries up to AFFIX_REROLL_MAX_ATTEMPTS times to satisfy validation rules.
  *
- * @param affix - the affix definition
- * @param tier  - item tier (1-7)
- * @returns the rolled value
+ * @returns the selected AffixDefinition, or null if all retries exhausted
+ */
+function rollAffix(slot: EquipmentSlot, existing: AffixInstance[]): AffixDefinition | null {
+  for (let attempt = 0; attempt < AFFIX_REROLL_MAX_ATTEMPTS; attempt++) {
+    // Tier 1: pick category
+    const categoryWeights = SLOT_CATEGORY_WEIGHTS[slot] as Record<string, number>;
+    const category = weightedRandom(categoryWeights) as AffixCategory;
+    const pool = AFFIXES_BY_CATEGORY[category];
+    if (!pool || pool.length === 0) continue;
+
+    // Tier 2: pick specific affix by within-category weight
+    const affixWeightMap: Record<string, number> = {};
+    for (const a of pool) {
+      affixWeightMap[a.id] = a.weight;
+    }
+    const affixId = weightedRandom(affixWeightMap);
+
+    if (validateAffix(affixId, existing)) {
+      return AFFIXES[affixId];
+    }
+  }
+
+  return null; // all retries exhausted
+}
+
+// --- Skill level value table ---
+
+/**
+ * Zone-range weighted roll for skill_level affixes.
+ * Tiers 1-2: always +1; tiers 3-6: chance of +2; tier 7: chance of +3.
+ */
+const SKILL_LEVEL_ZONE_RANGES: Record<number, Record<number, number>> = {
+  1: { 1: 1.0 },
+  2: { 1: 1.0 },
+  3: { 1: 0.80, 2: 0.20 },
+  4: { 1: 0.80, 2: 0.20 },
+  5: { 1: 0.60, 2: 0.40 },
+  6: { 1: 0.60, 2: 0.40 },
+  7: { 1: 0.50, 2: 0.35, 3: 0.15 },
+};
+
+function rollSkillLevelForTier(tier: number): number {
+  const table = SKILL_LEVEL_ZONE_RANGES[Math.max(1, Math.min(7, tier))];
+  if (!table) return 1;
+  return Number(weightedRandom(Object.fromEntries(
+    Object.entries(table).map(([k, v]) => [k, v]),
+  )));
+}
+
+// --- Affix value rolling ---
+
+/**
+ * Roll an affix value for the given tier.
+ * Flat affixes scale via TIER_FLAT_MULTIPLIERS, percentage via TIER_PERCENT_MULTIPLIERS.
+ * Skill level affixes use a separate zone-based weighted table.
  */
 function rollAffixValue(affix: AffixDefinition, tier: number): number {
   const clampedTier = Math.max(1, Math.min(7, tier));
 
-  // Check which value source to use (flat or percent)
-  const flatVal = affix.flatValues[clampedTier] ?? 0;
-  const pctVal = affix.percentValues[clampedTier] ?? 0;
-  const isFlat = flatVal > 0;
-  const baseValue = isFlat ? flatVal : pctVal;
-
-  if (baseValue === 0) return 0;
-
-  // Apply +/-15% variance
-  const variance = 0.15;
-  const minVal = baseValue * (1 - variance);
-  const maxVal = baseValue * (1 + variance);
-  const rolled = minVal + Math.random() * (maxVal - minVal);
-
-  // For integer flat stats (attack, defense, maxHP, etc.), round to integer
-  // For fractional/percent stats, keep 4 decimal precision
-  if (isFlat && baseValue >= 1) {
-    return Math.max(1, Math.round(rolled));
+  if (SKILL_LEVEL_AFFIX_IDS.has(affix.id)) {
+    return rollSkillLevelForTier(clampedTier);
   }
 
-  return +rolled.toFixed(4);
+  if (affix.scaleType === 'flat') {
+    const mult = TIER_FLAT_MULTIPLIERS[clampedTier];
+    const min = Math.floor(affix.t1Min * mult);
+    const max = Math.floor(affix.t1Max * mult);
+    return Math.max(1, Math.floor(Math.random() * (max - min + 1)) + min);
+  }
+
+  // percentage
+  const mult = TIER_PERCENT_MULTIPLIERS[clampedTier];
+  const min = affix.t1Min * mult;
+  const max = affix.t1Max * mult;
+  const rolled = min + Math.random() * (max - min);
+  return Math.round(rolled * 10000) / 10000;
 }
 
+// --- Affix count rolling ---
+
 /**
- * Determine how many affixes an item should have based on its rarity.
- * Rolls between the min and max for the rarity.
+ * Determine how many affixes an item should have based on rarity.
+ * Uses RARITY_MAX_MINUS_ONE_CHANCE to sometimes roll (max - 1).
  */
 function rollAffixCount(rarity: Rarity): number {
-  const range = RARITY_AFFIX_COUNTS[rarity];
-  if (!range) return 1;
-  const [min, max] = range;
-  return min + Math.floor(Math.random() * (max - min + 1));
+  const max = RARITY_AFFIX_COUNTS[rarity];
+  const downgradeChance = RARITY_MAX_MINUS_ONE_CHANCE[rarity] ?? 0;
+  return Math.random() < downgradeChance ? Math.max(0, max - 1) : max;
 }
 
 // --- Item generation ---
 
 /**
  * Generate a random item of the given tier.
- *
- * @param tier         - item tier (1-7), affects stat values and price
- * @param forcedRarity - force a specific rarity instead of rolling
- * @param forcedSlot   - force a specific equipment slot instead of rolling
- * @returns a new ItemInstance
  */
 export function generateItem(
   tier: number,
@@ -217,147 +268,21 @@ export function generateItem(
 ): ItemInstance {
   const clampedTier = Math.max(1, Math.min(7, tier));
 
-  // 1. Pick slot
   const slot = forcedSlot ?? rollSlot();
-
-  // 2. Roll rarity
   const rarity = forcedRarity ?? rollRarity();
-
-  // 3. Determine affix count
   const affixCount = rollAffixCount(rarity);
 
-  // 4. Select affixes
-  const affixDefs = selectAffixes(affixCount, slot);
-
-  // 5. Roll affix values
-  const affixes: AffixInstance[] = affixDefs.map(def => ({
-    id: def.id,
-    value: rollAffixValue(def, clampedTier),
-    isPrefix: def.isPrefix,
-  }));
-
-  // 6. Generate name
-  const name = generateItemName(slot, rarity);
-
-  // 7. Build the item
-  const item: ItemInstance = {
-    id: generateId(),
-    name,
-    slot,
-    rarity,
-    itemLevel: clampedTier * 10, // approximate item level from tier
-    tier: clampedTier,
-    affixes,
-    isImbued: false,
-    temperLevel: 0,
-    temperCycle: 0,
-    reforgeCount: 0,
-  };
-
-  return item;
-}
-
-/**
- * Generate a specific legendary item.
- *
- * @param legendaryId - the ID of the legendary definition
- * @returns a new legendary ItemInstance, or null if the legendaryId is unknown
- */
-export function generateLegendary(legendaryId: string): ItemInstance | null {
-  const def = LEGENDARIES[legendaryId];
-  if (!def) return null;
-
-  // Use tier 7 for legendaries (highest tier values)
-  const tier = 7;
-
-  // Build affixes from the legendary's base affix list
-  const affixes: AffixInstance[] = [];
-  for (const affixId of def.baseAffixes) {
-    const affixDef = AFFIXES[affixId];
-    if (!affixDef) continue;
-
-    affixes.push({
-      id: affixDef.id,
-      value: rollAffixValue(affixDef, tier),
-      isPrefix: affixDef.isPrefix,
+  // Roll affixes one at a time with validation
+  const affixList: AffixInstance[] = [];
+  for (let i = 0; i < affixCount; i++) {
+    const def = rollAffix(slot, affixList);
+    if (!def) continue;
+    affixList.push({
+      id: def.id,
+      value: rollAffixValue(def, clampedTier),
+      isPrefix: def.isPrefix,
     });
   }
-
-  // May add 1 random extra affix for legendary items
-  const extraAffixDefs = selectAffixes(
-    1,
-    def.slot,
-    new Set(def.baseAffixes),
-  );
-
-  for (const extraDef of extraAffixDefs) {
-    affixes.push({
-      id: extraDef.id,
-      value: rollAffixValue(extraDef, tier),
-      isPrefix: extraDef.isPrefix,
-    });
-  }
-
-  const item: ItemInstance = {
-    id: generateId(),
-    name: def.name,
-    slot: def.slot,
-    rarity: 'legendary',
-    itemLevel: 70,
-    tier,
-    affixes,
-    legendaryId: def.id,
-    legendaryEffect: def.effectId,
-    isImbued: false,
-    temperLevel: 0,
-    temperCycle: 0,
-    reforgeCount: 0,
-  };
-
-  return item;
-}
-
-/**
- * Generate an item for the shop. Shop items have slightly better average
- * stats (rolls biased toward higher values within the variance range).
- *
- * @param tier - item tier for the shop's zone
- * @returns a new ItemInstance
- */
-export function generateShopItem(tier: number): ItemInstance {
-  const clampedTier = Math.max(1, Math.min(7, tier));
-
-  // Shop items use bonus rarity weights (shift toward better rarities)
-  const slot = rollSlot();
-  const rarity = rollRarityWithBonus(1);
-  const affixCount = rollAffixCount(rarity);
-  const affixDefs = selectAffixes(affixCount, slot);
-
-  // Roll affix values with higher floor (shop items are slightly better)
-  const affixes: AffixInstance[] = affixDefs.map(def => {
-    const flatVal = def.flatValues[clampedTier] ?? 0;
-    const pctVal = def.percentValues[clampedTier] ?? 0;
-    const isFlat = flatVal > 0;
-    const baseValue = isFlat ? flatVal : pctVal;
-
-    if (baseValue === 0) {
-      return { id: def.id, value: 0, isPrefix: def.isPrefix };
-    }
-
-    // Shop variance: -5% to +20% (biased higher than normal -15% to +15%)
-    const minVal = baseValue * 0.95;
-    const maxVal = baseValue * 1.20;
-    let rolled = minVal + Math.random() * (maxVal - minVal);
-
-    // Round appropriately
-    if (isFlat && baseValue >= 1) {
-      rolled = Math.max(1, Math.round(rolled));
-    } else {
-      rolled = +rolled.toFixed(4);
-    }
-
-    return { id: def.id, value: rolled, isPrefix: def.isPrefix };
-  });
 
   const name = generateItemName(slot, rarity);
 
@@ -368,7 +293,108 @@ export function generateShopItem(tier: number): ItemInstance {
     rarity,
     itemLevel: clampedTier * 10,
     tier: clampedTier,
-    affixes,
+    affixes: affixList,
+    isImbued: false,
+    temperLevel: 0,
+    temperCycle: 0,
+    reforgeCount: 0,
+  };
+}
+
+/**
+ * Generate a specific legendary item.
+ */
+export function generateLegendary(legendaryId: string): ItemInstance | null {
+  const def = LEGENDARIES[legendaryId];
+  if (!def) return null;
+
+  const tier = 7;
+
+  const affixList: AffixInstance[] = [];
+  for (const affixId of def.baseAffixes) {
+    const affixDef = AFFIXES[affixId];
+    if (!affixDef) continue;
+    affixList.push({
+      id: affixDef.id,
+      value: rollAffixValue(affixDef, tier),
+      isPrefix: affixDef.isPrefix,
+    });
+  }
+
+  // One random extra affix for legendary items
+  const extraDef = rollAffix(def.slot, affixList);
+  if (extraDef) {
+    affixList.push({
+      id: extraDef.id,
+      value: rollAffixValue(extraDef, tier),
+      isPrefix: extraDef.isPrefix,
+    });
+  }
+
+  return {
+    id: generateId(),
+    name: def.name,
+    slot: def.slot,
+    rarity: 'legendary',
+    itemLevel: 70,
+    tier,
+    affixes: affixList,
+    legendaryId: def.id,
+    legendaryEffect: def.effectId,
+    isImbued: false,
+    temperLevel: 0,
+    temperCycle: 0,
+    reforgeCount: 0,
+  };
+}
+
+/**
+ * Generate an item for the shop. Shop items bias rolled values toward the
+ * top of the range (lower 30% excluded).
+ */
+export function generateShopItem(tier: number): ItemInstance {
+  const clampedTier = Math.max(1, Math.min(7, tier));
+
+  const slot = rollSlot();
+  const rarity = rollRarityWithBonus(1);
+  const affixCount = rollAffixCount(rarity);
+
+  const affixList: AffixInstance[] = [];
+  for (let i = 0; i < affixCount; i++) {
+    const def = rollAffix(slot, affixList);
+    if (!def) continue;
+
+    // Shop bias: roll in top 70% of range
+    let value: number;
+    if (SKILL_LEVEL_AFFIX_IDS.has(def.id)) {
+      value = rollSkillLevelForTier(clampedTier);
+    } else if (def.scaleType === 'flat') {
+      const mult = TIER_FLAT_MULTIPLIERS[clampedTier];
+      const min = Math.floor(def.t1Min * mult);
+      const max = Math.floor(def.t1Max * mult);
+      const shopMin = min + Math.floor((max - min) * 0.3);
+      value = Math.max(1, Math.floor(Math.random() * (max - shopMin + 1)) + shopMin);
+    } else {
+      const mult = TIER_PERCENT_MULTIPLIERS[clampedTier];
+      const min = def.t1Min * mult;
+      const max = def.t1Max * mult;
+      const shopMin = min + (max - min) * 0.3;
+      value = Math.round((shopMin + Math.random() * (max - shopMin)) * 10000) / 10000;
+    }
+
+    affixList.push({ id: def.id, value, isPrefix: def.isPrefix });
+  }
+
+  const name = generateItemName(slot, rarity);
+
+  return {
+    id: generateId(),
+    name,
+    slot,
+    rarity,
+    itemLevel: clampedTier * 10,
+    tier: clampedTier,
+    affixes: affixList,
     isImbued: false,
     temperLevel: 0,
     temperCycle: 0,
@@ -378,9 +404,6 @@ export function generateShopItem(tier: number): ItemInstance {
 
 /**
  * Generate an item for a boss drop (guaranteed rare or better).
- *
- * @param tier - item tier matching the zone
- * @returns a new ItemInstance
  */
 export function generateBossItem(tier: number): ItemInstance {
   const rarity = rollRarityMinRare();
@@ -390,7 +413,6 @@ export function generateBossItem(tier: number): ItemInstance {
 // --- Lifecycle ---
 
 export function init(): void {
-  // Reset the item ID counter
   nextItemId = 1;
 }
 

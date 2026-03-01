@@ -53,6 +53,8 @@ export type AffixCategory =
   | 'skillPower'
   | 'skillLevel';
 
+export type AffixScaleType = 'flat' | 'percentage';
+
 export type MonsterArchetype =
   | 'melee'
   | 'ranged'
@@ -107,7 +109,7 @@ export type MapModifier =
   | 'armored_horde'
   | 'boss_empowered';
 export type RoomType = 'spawn' | 'combat' | 'elite' | 'treasure';
-export type ExpeditionRunStatus = 'active' | 'completed' | 'failed' | 'abandoned';
+export type ExpeditionRunStatus = 'active' | 'awaiting_extraction' | 'completed' | 'failed' | 'abandoned';
 
 // --- Data Definitions (static, read-only from data files) ---
 
@@ -349,6 +351,28 @@ export interface ExpeditionRewardBreakdown {
   completionChestCount: number;
 }
 
+export interface ExpeditionExtractionPortal {
+  x: number;
+  y: number;
+  interactRadius: number;
+  spawnedAtGameTime: number;
+  isActive: boolean;
+}
+
+export type ExpeditionChestSource = 'map' | 'completion';
+
+export interface ExpeditionChest {
+  id: string;
+  x: number;
+  y: number;
+  interactRadius: number;
+  rarity: Rarity;
+  source: ExpeditionChestSource;
+  dropCount: number;
+  spawnedAtGameTime: number;
+  isOpened: boolean;
+}
+
 export interface ExpeditionRunState {
   runId: string;
   seed: number;
@@ -362,12 +386,19 @@ export interface ExpeditionRunState {
   checkpointY: number;
   map: ExpeditionMap;
   progress: ExpeditionProgress;
+  pendingRewards: ExpeditionRewardBreakdown | null;
+  extractionPortal: ExpeditionExtractionPortal | null;
+  chests: ExpeditionChest[];
   startedAtGameTime: number;
 }
 
 export interface ExpeditionMetaProgress {
-  unlockedTiers: number[];
-  firstClearClaimed: Record<string, boolean>; // key: `${tier}:extermination`
+  unlockedZones: string[];
+  maxTierByZone: Record<string, number>; // key: zoneId, value: 1..EXPEDITION_MAX_TIER
+  bossClearedByZone: Record<string, boolean>; // key: zoneId
+  selectedZoneId: string;
+  selectedTierByZone: Record<string, number>; // key: zoneId, value: last selected tier
+  firstClearClaimed: Record<string, boolean>; // key: `${zoneId}:${tier}:${objective}`
   totalRuns: number;
   totalCompletions: number;
   totalFailures: number;
@@ -381,12 +412,15 @@ export interface AffixDefinition {
   category: AffixCategory;
   isPrefix: boolean;
 
-  // Per-tier values [tier0 unused, tier1..tier7]
-  flatValues: number[];
-  percentValues: number[];
+  // Range at tier 1 — higher tiers are scaled via TIER_*_MULTIPLIERS
+  t1Min: number;
+  t1Max: number;
 
-  // Slot weights — higher = more likely on this slot type
-  slotWeights: Record<EquipmentSlot, number>;
+  // 'flat' = integer stat (attack, defense, etc.), 'percentage' = 0-1 fraction
+  scaleType: AffixScaleType;
+
+  // Selection weight within its category (higher = more common)
+  weight: number;
 }
 
 export interface LegendaryDefinition {
@@ -534,6 +568,30 @@ export interface PlayerState {
   // Status potency (multiplier on status damage/duration)
   statusPotency: number;
 
+  // Equipment-derived secondary stats (wired in player.ts recalculateStats)
+  armorPen: number;         // reduces enemy effective defense (0-1 fraction)
+  hpRegen: number;          // % of maxHP restored per second
+  dodgeChance: number;      // chance to avoid damage entirely (0-1 fraction)
+  damageReduction: number;  // % of incoming damage reduced (0-0.75 cap)
+  energyRegen: number;      // bonus energy per second multiplier
+  goldFind: number;         // gold drop multiplier (additive)
+  xpBonus: number;          // XP gain multiplier (additive)
+
+  // Skill category damage multipliers
+  skillPowerBoost: number;
+  skillSpeedBoost: number;
+  skillCritBoost: number;
+  skillMageBoost: number;
+  skillUtilityBoost: number;
+
+  // Skill category flat level bonuses (integer)
+  skillPowerLevel: number;
+  skillSpeedLevel: number;
+  skillCritLevel: number;
+  skillMageLevel: number;
+  skillUtilityLevel: number;
+  skillAllLevel: number;
+
   // Skills
   skillPoints: number;
   activeSkills: (string | null)[]; // 4 active slots
@@ -568,6 +626,9 @@ export interface PlayerState {
 
   // Ascension
   ascensionLevel: number;
+
+  // Targeting
+  targetMonsterId: string | null;
 
   // Tracking
   monstersKilled: number;
@@ -616,6 +677,15 @@ export interface MonsterInstance {
   // Position
   x: number;
   y: number;
+
+  // Spawn origin (for wander leash)
+  spawnX: number;
+  spawnY: number;
+
+  // Wander state
+  wanderTargetX?: number;
+  wanderTargetY?: number;
+  wanderPauseTimer: number;
 
   // Status effects
   statusEffects: StatusEffectInstance[];
@@ -767,6 +837,7 @@ export interface GameState {
 
   // UI state
   inventoryOpen: boolean;
+  merchantOpen: boolean;
   selectedInventorySlot: number;
 }
 
@@ -784,6 +855,7 @@ export type GameEventMap = {
   'player:velocityChanged': { vx: number; vy: number; speed: number };
   'player:startedMoving': undefined;
   'player:stoppedMoving': undefined;
+  'player:targetChanged': { monsterId: string | null };
 
   // Combat events
   'combat:playerAttack': { angle: number; skillId?: string };
@@ -900,6 +972,7 @@ export type GameEventMap = {
 
   // UI events
   'ui:inventoryToggle': undefined;
+  'ui:merchantToggle': undefined;
   'ui:skillSlotClicked': { slot: number };
   'ui:damageNumber': {
     x: number;
@@ -992,6 +1065,27 @@ export type GameEventMap = {
     runId: string;
     durationSec: number;
     rewards: ExpeditionRewardBreakdown;
+  };
+  'expedition:readyToExtract': {
+    runId: string;
+    x: number;
+    y: number;
+    rewards: ExpeditionRewardBreakdown;
+  };
+  'expedition:chestSpawned': {
+    runId: string;
+    chestId: string;
+    x: number;
+    y: number;
+    rarity: Rarity;
+    source: ExpeditionChestSource;
+  };
+  'expedition:chestOpened': {
+    runId: string;
+    chestId: string;
+    rarity: Rarity;
+    source: ExpeditionChestSource;
+    dropCount: number;
   };
   'expedition:failed': { runId: string; reason: 'no_portals' | 'abandoned' };
   'expedition:returnHub': {

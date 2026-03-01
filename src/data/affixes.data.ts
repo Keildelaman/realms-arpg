@@ -1,16 +1,18 @@
 // ============================================================================
-// Affixes Data — 36 affixes with per-tier scaling
-// Adapted from clicker's 63 affixes, consolidated for spatial ARPG.
+// Affixes Data — 36 affixes with range-based tier 1 values + scale type
+// 2-tier selection: category (from SLOT_CATEGORY_WEIGHTS) → affix (by weight).
 // Categories: offensive(6), defensive(5), utility(4), statusChance(5),
 //             statusPotency(5), skillPower(5), skillLevel(6)
 // ============================================================================
 
-import type { AffixDefinition, EquipmentSlot } from '@/core/types';
+import type { AffixDefinition, AffixCategory } from '@/core/types';
 
 // ============================================================================
 // AFFIX DEFINITIONS
 // ============================================================================
-// flatValues[0] and percentValues[0] are unused (index 0). Indices 1-7 = tiers.
+// t1Min/t1Max define the value range at tier 1.
+// Higher tiers scale via TIER_FLAT_MULTIPLIERS or TIER_PERCENT_MULTIPLIERS.
+// weight = selection weight within its category.
 
 export const AFFIXES: Record<string, AffixDefinition> = {
 
@@ -25,9 +27,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'attack',
     category: 'offensive',
     isPrefix: true,
-    flatValues:    [0, 4, 8, 15, 26, 44, 72, 120],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 40, helmet: 5, chest: 5, gloves: 25, boots: 5, accessory: 15 },
+    t1Min: 2, t1Max: 6, scaleType: 'flat', weight: 25,
   },
 
   flat_magic_power: {
@@ -37,9 +37,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'magicPower',
     category: 'offensive',
     isPrefix: true,
-    flatValues:    [0, 4, 8, 15, 26, 44, 72, 120],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 40, helmet: 10, chest: 5, gloves: 15, boots: 5, accessory: 20 },
+    t1Min: 2, t1Max: 6, scaleType: 'flat', weight: 25,
   },
 
   crit_chance: {
@@ -49,9 +47,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'critChance',
     category: 'offensive',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.015, 0.020, 0.026, 0.033, 0.042, 0.054, 0.068],
-    slotWeights: { weapon: 25, helmet: 10, chest: 5, gloves: 30, boots: 5, accessory: 20 },
+    t1Min: 0.01, t1Max: 0.02, scaleType: 'percentage', weight: 18,
   },
 
   crit_damage: {
@@ -61,9 +57,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'critDamage',
     category: 'offensive',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.045, 0.059, 0.077, 0.099, 0.126, 0.162, 0.203],
-    slotWeights: { weapon: 30, helmet: 10, chest: 5, gloves: 25, boots: 5, accessory: 20 },
+    t1Min: 0.04, t1Max: 0.08, scaleType: 'percentage', weight: 18,
   },
 
   attack_speed: {
@@ -73,9 +67,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'attackSpeed',
     category: 'offensive',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.03, 0.039, 0.051, 0.066, 0.084, 0.108, 0.135],
-    slotWeights: { weapon: 30, helmet: 5, chest: 5, gloves: 35, boots: 10, accessory: 15 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 15,
   },
 
   armor_penetration: {
@@ -85,9 +77,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'armorPen',
     category: 'offensive',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.020, 0.026, 0.034, 0.044, 0.056, 0.072, 0.090],
-    slotWeights: { weapon: 40, helmet: 5, chest: 5, gloves: 20, boots: 5, accessory: 15 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 14,
   },
 
   // ==========================================================================
@@ -101,9 +91,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'maxHP',
     category: 'defensive',
     isPrefix: false,
-    flatValues:    [0, 14, 28, 53, 91, 154, 252, 420],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 5, helmet: 20, chest: 35, gloves: 5, boots: 15, accessory: 20 },
+    t1Min: 12, t1Max: 28, scaleType: 'flat', weight: 30,
   },
 
   flat_defense: {
@@ -113,9 +101,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'defense',
     category: 'defensive',
     isPrefix: false,
-    flatValues:    [0, 5, 10, 19, 33, 55, 90, 150],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 5, helmet: 25, chest: 35, gloves: 10, boots: 20, accessory: 10 },
+    t1Min: 2, t1Max: 5, scaleType: 'flat', weight: 25,
   },
 
   hp_regen: {
@@ -125,9 +111,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'hpRegen',
     category: 'defensive',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.003, 0.004, 0.005, 0.007, 0.008, 0.011, 0.014],
-    slotWeights: { weapon: 5, helmet: 15, chest: 30, gloves: 5, boots: 15, accessory: 25 },
+    t1Min: 0.003, t1Max: 0.008, scaleType: 'percentage', weight: 15,
   },
 
   dodge_chance: {
@@ -137,9 +121,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'dodgeChance',
     category: 'defensive',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.010, 0.013, 0.017, 0.022, 0.028, 0.036, 0.045],
-    slotWeights: { weapon: 5, helmet: 10, chest: 15, gloves: 10, boots: 35, accessory: 20 },
+    t1Min: 0.02, t1Max: 0.04, scaleType: 'percentage', weight: 15,
   },
 
   damage_reduction: {
@@ -149,9 +131,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'damageReduction',
     category: 'defensive',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.010, 0.013, 0.017, 0.022, 0.028, 0.036, 0.045],
-    slotWeights: { weapon: 5, helmet: 15, chest: 40, gloves: 5, boots: 15, accessory: 15 },
+    t1Min: 0.01, t1Max: 0.03, scaleType: 'percentage', weight: 12,
   },
 
   // ==========================================================================
@@ -165,9 +145,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'moveSpeed',
     category: 'utility',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.03, 0.039, 0.051, 0.066, 0.084, 0.108, 0.135],
-    slotWeights: { weapon: 5, helmet: 5, chest: 5, gloves: 5, boots: 50, accessory: 15 },
+    t1Min: 0.02, t1Max: 0.06, scaleType: 'percentage', weight: 20,
   },
 
   energy_regen: {
@@ -177,9 +155,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'energyRegen',
     category: 'utility',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.035, 0.046, 0.060, 0.077, 0.098, 0.126, 0.158],
-    slotWeights: { weapon: 10, helmet: 20, chest: 10, gloves: 10, boots: 15, accessory: 30 },
+    t1Min: 0.01, t1Max: 0.03, scaleType: 'percentage', weight: 20,
   },
 
   gold_find: {
@@ -189,9 +165,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'goldFind',
     category: 'utility',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.045, 0.059, 0.077, 0.099, 0.126, 0.162, 0.203],
-    slotWeights: { weapon: 10, helmet: 15, chest: 15, gloves: 15, boots: 15, accessory: 30 },
+    t1Min: 0.03, t1Max: 0.08, scaleType: 'percentage', weight: 20,
   },
 
   xp_bonus: {
@@ -201,9 +175,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'xpBonus',
     category: 'utility',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.045, 0.059, 0.077, 0.099, 0.126, 0.162, 0.203],
-    slotWeights: { weapon: 10, helmet: 25, chest: 10, gloves: 10, boots: 10, accessory: 30 },
+    t1Min: 0.03, t1Max: 0.06, scaleType: 'percentage', weight: 20,
   },
 
   // ==========================================================================
@@ -217,9 +189,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'bleedChance',
     category: 'statusChance',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.035, 0.046, 0.060, 0.077, 0.098, 0.126, 0.158],
-    slotWeights: { weapon: 35, helmet: 5, chest: 5, gloves: 30, boots: 5, accessory: 15 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   poison_chance: {
@@ -229,9 +199,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'poisonChance',
     category: 'statusChance',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.035, 0.046, 0.060, 0.077, 0.098, 0.126, 0.158],
-    slotWeights: { weapon: 35, helmet: 5, chest: 5, gloves: 30, boots: 5, accessory: 15 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   burn_chance: {
@@ -241,9 +209,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'burnChance',
     category: 'statusChance',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.035, 0.046, 0.060, 0.077, 0.098, 0.126, 0.158],
-    slotWeights: { weapon: 35, helmet: 5, chest: 5, gloves: 25, boots: 5, accessory: 20 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   slow_chance: {
@@ -253,9 +219,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'slowChance',
     category: 'statusChance',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.020, 0.026, 0.034, 0.044, 0.056, 0.072, 0.090],
-    slotWeights: { weapon: 30, helmet: 5, chest: 5, gloves: 20, boots: 15, accessory: 20 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   freeze_chance: {
@@ -265,9 +229,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'freezeChance',
     category: 'statusChance',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.012, 0.016, 0.020, 0.026, 0.034, 0.043, 0.054],
-    slotWeights: { weapon: 30, helmet: 5, chest: 5, gloves: 20, boots: 10, accessory: 25 },
+    t1Min: 0.02, t1Max: 0.05, scaleType: 'percentage', weight: 15,
   },
 
   // ==========================================================================
@@ -281,9 +243,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'bleedPotency',
     category: 'statusPotency',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.050, 0.065, 0.085, 0.110, 0.140, 0.180, 0.225],
-    slotWeights: { weapon: 30, helmet: 5, chest: 5, gloves: 30, boots: 5, accessory: 20 },
+    t1Min: 0.06, t1Max: 0.14, scaleType: 'percentage', weight: 20,
   },
 
   poison_potency: {
@@ -293,9 +253,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'poisonPotency',
     category: 'statusPotency',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.050, 0.065, 0.085, 0.110, 0.140, 0.180, 0.225],
-    slotWeights: { weapon: 30, helmet: 5, chest: 5, gloves: 30, boots: 5, accessory: 20 },
+    t1Min: 0.06, t1Max: 0.14, scaleType: 'percentage', weight: 20,
   },
 
   burn_potency: {
@@ -305,9 +263,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'burnPotency',
     category: 'statusPotency',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.050, 0.065, 0.085, 0.110, 0.140, 0.180, 0.225],
-    slotWeights: { weapon: 30, helmet: 5, chest: 5, gloves: 25, boots: 5, accessory: 25 },
+    t1Min: 0.06, t1Max: 0.14, scaleType: 'percentage', weight: 20,
   },
 
   slow_potency: {
@@ -317,9 +273,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'slowPotency',
     category: 'statusPotency',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.035, 0.046, 0.060, 0.077, 0.098, 0.126, 0.158],
-    slotWeights: { weapon: 25, helmet: 5, chest: 5, gloves: 20, boots: 15, accessory: 25 },
+    t1Min: 0.06, t1Max: 0.14, scaleType: 'percentage', weight: 20,
   },
 
   freeze_potency: {
@@ -329,9 +283,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'freezePotency',
     category: 'statusPotency',
     isPrefix: true,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.035, 0.046, 0.060, 0.077, 0.098, 0.126, 0.158],
-    slotWeights: { weapon: 25, helmet: 5, chest: 5, gloves: 20, boots: 10, accessory: 30 },
+    t1Min: 0.05, t1Max: 0.11, scaleType: 'percentage', weight: 15,
   },
 
   // ==========================================================================
@@ -342,64 +294,54 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     id: 'skill_power_boost',
     name: '+X% Power Skill Damage',
     description: 'Increases damage of Power category skills.',
-    stat: 'skillPowerDmg',
+    stat: 'skillPowerBoost',
     category: 'skillPower',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.045, 0.059, 0.077, 0.099, 0.126, 0.162, 0.203],
-    slotWeights: { weapon: 25, helmet: 15, chest: 10, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   skill_speed_boost: {
     id: 'skill_speed_boost',
     name: '+X% Speed Skill Damage',
     description: 'Increases damage of Speed category skills.',
-    stat: 'skillSpeedDmg',
+    stat: 'skillSpeedBoost',
     category: 'skillPower',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.045, 0.059, 0.077, 0.099, 0.126, 0.162, 0.203],
-    slotWeights: { weapon: 25, helmet: 15, chest: 10, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   skill_crit_boost: {
     id: 'skill_crit_boost',
     name: '+X% Crit Skill Damage',
     description: 'Increases damage of Crit category skills.',
-    stat: 'skillCritDmg',
+    stat: 'skillCritBoost',
     category: 'skillPower',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.045, 0.059, 0.077, 0.099, 0.126, 0.162, 0.203],
-    slotWeights: { weapon: 25, helmet: 15, chest: 10, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   skill_mage_boost: {
     id: 'skill_mage_boost',
     name: '+X% Mage Skill Damage',
     description: 'Increases damage of Mage category skills.',
-    stat: 'skillMageDmg',
+    stat: 'skillMageBoost',
     category: 'skillPower',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.045, 0.059, 0.077, 0.099, 0.126, 0.162, 0.203],
-    slotWeights: { weapon: 25, helmet: 15, chest: 10, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   skill_utility_boost: {
     id: 'skill_utility_boost',
     name: '+X% Utility Skill Damage',
     description: 'Increases damage of Utility category skills.',
-    stat: 'skillUtilityDmg',
+    stat: 'skillUtilityBoost',
     category: 'skillPower',
     isPrefix: false,
-    flatValues:    [0, 0, 0, 0, 0, 0, 0, 0],
-    percentValues: [0, 0.045, 0.059, 0.077, 0.099, 0.126, 0.162, 0.203],
-    slotWeights: { weapon: 25, helmet: 15, chest: 10, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 20,
   },
 
   // ==========================================================================
-  // SKILL LEVEL (6) — +level to skill categories (zone-based flat values)
+  // SKILL LEVEL (6) — +level to skill categories (zone-range weighted)
   // ==========================================================================
 
   skill_power_level: {
@@ -409,9 +351,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'skillPowerLevel',
     category: 'skillLevel',
     isPrefix: false,
-    flatValues:    [0, 1, 1, 1, 1, 2, 2, 3],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 20, helmet: 15, chest: 15, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 1, t1Max: 1, scaleType: 'flat', weight: 17,
   },
 
   skill_speed_level: {
@@ -421,9 +361,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'skillSpeedLevel',
     category: 'skillLevel',
     isPrefix: false,
-    flatValues:    [0, 1, 1, 1, 1, 2, 2, 3],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 20, helmet: 15, chest: 15, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 1, t1Max: 1, scaleType: 'flat', weight: 17,
   },
 
   skill_crit_level: {
@@ -433,9 +371,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'skillCritLevel',
     category: 'skillLevel',
     isPrefix: false,
-    flatValues:    [0, 1, 1, 1, 1, 2, 2, 3],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 20, helmet: 15, chest: 15, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 1, t1Max: 1, scaleType: 'flat', weight: 17,
   },
 
   skill_mage_level: {
@@ -445,9 +381,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'skillMageLevel',
     category: 'skillLevel',
     isPrefix: false,
-    flatValues:    [0, 1, 1, 1, 1, 2, 2, 3],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 20, helmet: 15, chest: 15, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 1, t1Max: 1, scaleType: 'flat', weight: 17,
   },
 
   skill_utility_level: {
@@ -457,9 +391,7 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'skillUtilityLevel',
     category: 'skillLevel',
     isPrefix: false,
-    flatValues:    [0, 1, 1, 1, 1, 2, 2, 3],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 20, helmet: 15, chest: 15, gloves: 15, boots: 10, accessory: 20 },
+    t1Min: 1, t1Max: 1, scaleType: 'flat', weight: 17,
   },
 
   skill_all_level: {
@@ -469,33 +401,28 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     stat: 'skillAllLevel',
     category: 'skillLevel',
     isPrefix: false,
-    flatValues:    [0, 1, 1, 1, 1, 1, 2, 2],
-    percentValues: [0, 0, 0, 0, 0, 0, 0, 0],
-    slotWeights: { weapon: 15, helmet: 20, chest: 10, gloves: 10, boots: 10, accessory: 30 },
+    t1Min: 1, t1Max: 1, scaleType: 'flat', weight: 5,
   },
 };
 
 // ============================================================================
-// HELPER FUNCTIONS
+// AFFIXES_BY_CATEGORY — Pre-grouped for O(1) lookup during 2-tier selection
 // ============================================================================
 
-/**
- * Get all affixes that can appear on a given equipment slot at a given tier.
- * Filters to affixes with a non-zero weight for the slot and a non-zero value
- * at the given tier.
- */
-export function getAffixesForSlot(
-  slot: EquipmentSlot,
-  tier: number
-): AffixDefinition[] {
-  return Object.values(AFFIXES).filter((affix) => {
-    // Must have weight on this slot
-    if (affix.slotWeights[slot] <= 0) return false;
+export const AFFIXES_BY_CATEGORY: Record<AffixCategory, AffixDefinition[]> = (() => {
+  const result: Record<AffixCategory, AffixDefinition[]> = {
+    offensive: [],
+    defensive: [],
+    utility: [],
+    statusChance: [],
+    statusPotency: [],
+    skillPower: [],
+    skillLevel: [],
+  };
 
-    // Must have a non-zero value at this tier
-    const hasFlatValue = affix.flatValues[tier] !== undefined && affix.flatValues[tier] > 0;
-    const hasPercentValue = affix.percentValues[tier] !== undefined && affix.percentValues[tier] > 0;
+  for (const affix of Object.values(AFFIXES)) {
+    result[affix.category].push(affix);
+  }
 
-    return hasFlatValue || hasPercentValue;
-  });
-}
+  return result;
+})();
