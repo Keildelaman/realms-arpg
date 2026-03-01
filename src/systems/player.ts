@@ -29,7 +29,7 @@ interface Buff {
 }
 
 /**
- * Stat modifiers that buffs can contribute.
+ * Stat modifiers that buffs and equipment can contribute.
  * Flat values are added; percent values are summed then multiplied.
  */
 interface StatModifiers {
@@ -56,6 +56,27 @@ interface StatModifiers {
   flatSlowChance: number;
   flatFreezeChance: number;
   flatStatusPotency: number;
+  // Secondary equipment stats (additive accumulation)
+  flatArmorPen: number;
+  flatHpRegen: number;
+  flatDodgeChance: number;
+  flatDamageReduction: number;
+  flatEnergyRegen: number;
+  flatGoldFind: number;
+  flatXpBonus: number;
+  // Skill boosts
+  flatSkillPowerBoost: number;
+  flatSkillSpeedBoost: number;
+  flatSkillCritBoost: number;
+  flatSkillMageBoost: number;
+  flatSkillUtilityBoost: number;
+  // Skill levels
+  flatSkillPowerLevel: number;
+  flatSkillSpeedLevel: number;
+  flatSkillCritLevel: number;
+  flatSkillMageLevel: number;
+  flatSkillUtilityLevel: number;
+  flatSkillAllLevel: number;
 }
 
 const activeBuffs: Map<string, Buff> = new Map();
@@ -233,6 +254,28 @@ export function recalculateStats(): void {
   player.freezeChance = Math.max(0, Math.min(1, freezeChance));
   player.statusPotency = Math.max(0, statusPotency);
 
+  // --- Secondary equipment stats (additive from equipment + buffs) ---
+  player.armorPen       = Math.max(0, Math.min(0.9, equipFlat.flatArmorPen + buffMods.flatArmorPen));
+  player.hpRegen        = Math.max(0, equipFlat.flatHpRegen + buffMods.flatHpRegen);
+  player.dodgeChance    = Math.max(0, Math.min(0.75, equipFlat.flatDodgeChance + buffMods.flatDodgeChance));
+  player.damageReduction = Math.max(0, Math.min(0.75, equipFlat.flatDamageReduction + buffMods.flatDamageReduction));
+  player.energyRegen    = Math.max(0, equipFlat.flatEnergyRegen + buffMods.flatEnergyRegen);
+  player.goldFind       = Math.max(0, equipFlat.flatGoldFind + buffMods.flatGoldFind);
+  player.xpBonus        = Math.max(0, equipFlat.flatXpBonus + buffMods.flatXpBonus);
+
+  player.skillPowerBoost   = Math.max(0, equipFlat.flatSkillPowerBoost + buffMods.flatSkillPowerBoost);
+  player.skillSpeedBoost   = Math.max(0, equipFlat.flatSkillSpeedBoost + buffMods.flatSkillSpeedBoost);
+  player.skillCritBoost    = Math.max(0, equipFlat.flatSkillCritBoost + buffMods.flatSkillCritBoost);
+  player.skillMageBoost    = Math.max(0, equipFlat.flatSkillMageBoost + buffMods.flatSkillMageBoost);
+  player.skillUtilityBoost = Math.max(0, equipFlat.flatSkillUtilityBoost + buffMods.flatSkillUtilityBoost);
+
+  player.skillPowerLevel   = Math.max(0, Math.round(equipFlat.flatSkillPowerLevel + buffMods.flatSkillPowerLevel));
+  player.skillSpeedLevel   = Math.max(0, Math.round(equipFlat.flatSkillSpeedLevel + buffMods.flatSkillSpeedLevel));
+  player.skillCritLevel    = Math.max(0, Math.round(equipFlat.flatSkillCritLevel + buffMods.flatSkillCritLevel));
+  player.skillMageLevel    = Math.max(0, Math.round(equipFlat.flatSkillMageLevel + buffMods.flatSkillMageLevel));
+  player.skillUtilityLevel = Math.max(0, Math.round(equipFlat.flatSkillUtilityLevel + buffMods.flatSkillUtilityLevel));
+  player.skillAllLevel     = Math.max(0, Math.round(equipFlat.flatSkillAllLevel + buffMods.flatSkillAllLevel));
+
   // Scale current HP proportionally if max HP changed
   if (oldMaxHP > 0 && player.maxHP !== oldMaxHP) {
     const ratio = player.currentHP / oldMaxHP;
@@ -257,21 +300,21 @@ function accumulateItemModifiers(
     const id = affix.id;
     const val = affix.value;
 
-    // --- Flat affixes (backed by flatValues[] in affixes.data.ts) ---
+    // --- Flat affixes (scaleType: 'flat' in affixes.data.ts) ---
     if (id === 'flat_attack') flat.flatAttack += val;
     else if (id === 'flat_defense') flat.flatDefense += val;
     else if (id === 'flat_magic_power') flat.flatMagicPower += val;
     else if (id === 'flat_max_hp') flat.flatMaxHP += val;
 
-    // --- Critical stats (percentValues but added directly, not as a multiplier) ---
+    // --- Critical stats (percentage, added directly as bonus) ---
     else if (id === 'crit_chance') flat.flatCritChance += val;
     else if (id === 'crit_damage') flat.flatCritDamage += val;
 
-    // --- Speed stats (percentValues, used as multiplicative bonus) ---
+    // --- Speed stats (percentage, used as multiplicative bonus) ---
     else if (id === 'attack_speed') percent.percentAttackSpeed += val;
     else if (id === 'move_speed') percent.percentMoveSpeed += val;
 
-    // --- Status chance affixes (percentValues, added directly to chance fields) ---
+    // --- Status chance affixes (percentage, added directly to chance fields) ---
     else if (id === 'bleed_chance') flat.flatBleedChance += val;
     else if (id === 'poison_chance') flat.flatPoisonChance += val;
     else if (id === 'burn_chance') flat.flatBurnChance += val;
@@ -287,9 +330,29 @@ function accumulateItemModifiers(
       id === 'freeze_potency'
     ) flat.flatStatusPotency += val;
 
-    // Note: armor_penetration, hp_regen, dodge_chance, damage_reduction,
-    // energy_regen, gold_find, xp_bonus, skill_*_boost, skill_*_level
-    // are not yet wired into StatModifiers and are intentionally skipped here.
+    // --- Secondary stats ---
+    else if (id === 'armor_penetration') flat.flatArmorPen += val;
+    else if (id === 'hp_regen') flat.flatHpRegen += val;
+    else if (id === 'dodge_chance') flat.flatDodgeChance += val;
+    else if (id === 'damage_reduction') flat.flatDamageReduction += val;
+    else if (id === 'energy_regen') flat.flatEnergyRegen += val;
+    else if (id === 'gold_find') flat.flatGoldFind += val;
+    else if (id === 'xp_bonus') flat.flatXpBonus += val;
+
+    // --- Skill boosts ---
+    else if (id === 'skill_power_boost') flat.flatSkillPowerBoost += val;
+    else if (id === 'skill_speed_boost') flat.flatSkillSpeedBoost += val;
+    else if (id === 'skill_crit_boost') flat.flatSkillCritBoost += val;
+    else if (id === 'skill_mage_boost') flat.flatSkillMageBoost += val;
+    else if (id === 'skill_utility_boost') flat.flatSkillUtilityBoost += val;
+
+    // --- Skill levels ---
+    else if (id === 'skill_power_level') flat.flatSkillPowerLevel += val;
+    else if (id === 'skill_speed_level') flat.flatSkillSpeedLevel += val;
+    else if (id === 'skill_crit_level') flat.flatSkillCritLevel += val;
+    else if (id === 'skill_mage_level') flat.flatSkillMageLevel += val;
+    else if (id === 'skill_utility_level') flat.flatSkillUtilityLevel += val;
+    else if (id === 'skill_all_level') flat.flatSkillAllLevel += val;
   }
 }
 
@@ -324,6 +387,24 @@ function sumBuffModifiers(): StatModifiers {
     if (s.flatSlowChance) sum.flatSlowChance += s.flatSlowChance;
     if (s.flatFreezeChance) sum.flatFreezeChance += s.flatFreezeChance;
     if (s.flatStatusPotency) sum.flatStatusPotency += s.flatStatusPotency;
+    if (s.flatArmorPen) sum.flatArmorPen += s.flatArmorPen;
+    if (s.flatHpRegen) sum.flatHpRegen += s.flatHpRegen;
+    if (s.flatDodgeChance) sum.flatDodgeChance += s.flatDodgeChance;
+    if (s.flatDamageReduction) sum.flatDamageReduction += s.flatDamageReduction;
+    if (s.flatEnergyRegen) sum.flatEnergyRegen += s.flatEnergyRegen;
+    if (s.flatGoldFind) sum.flatGoldFind += s.flatGoldFind;
+    if (s.flatXpBonus) sum.flatXpBonus += s.flatXpBonus;
+    if (s.flatSkillPowerBoost) sum.flatSkillPowerBoost += s.flatSkillPowerBoost;
+    if (s.flatSkillSpeedBoost) sum.flatSkillSpeedBoost += s.flatSkillSpeedBoost;
+    if (s.flatSkillCritBoost) sum.flatSkillCritBoost += s.flatSkillCritBoost;
+    if (s.flatSkillMageBoost) sum.flatSkillMageBoost += s.flatSkillMageBoost;
+    if (s.flatSkillUtilityBoost) sum.flatSkillUtilityBoost += s.flatSkillUtilityBoost;
+    if (s.flatSkillPowerLevel) sum.flatSkillPowerLevel += s.flatSkillPowerLevel;
+    if (s.flatSkillSpeedLevel) sum.flatSkillSpeedLevel += s.flatSkillSpeedLevel;
+    if (s.flatSkillCritLevel) sum.flatSkillCritLevel += s.flatSkillCritLevel;
+    if (s.flatSkillMageLevel) sum.flatSkillMageLevel += s.flatSkillMageLevel;
+    if (s.flatSkillUtilityLevel) sum.flatSkillUtilityLevel += s.flatSkillUtilityLevel;
+    if (s.flatSkillAllLevel) sum.flatSkillAllLevel += s.flatSkillAllLevel;
   }
 
   return sum;
@@ -353,6 +434,24 @@ function createEmptyModifiers(): StatModifiers {
     flatSlowChance: 0,
     flatFreezeChance: 0,
     flatStatusPotency: 0,
+    flatArmorPen: 0,
+    flatHpRegen: 0,
+    flatDodgeChance: 0,
+    flatDamageReduction: 0,
+    flatEnergyRegen: 0,
+    flatGoldFind: 0,
+    flatXpBonus: 0,
+    flatSkillPowerBoost: 0,
+    flatSkillSpeedBoost: 0,
+    flatSkillCritBoost: 0,
+    flatSkillMageBoost: 0,
+    flatSkillUtilityBoost: 0,
+    flatSkillPowerLevel: 0,
+    flatSkillSpeedLevel: 0,
+    flatSkillCritLevel: 0,
+    flatSkillMageLevel: 0,
+    flatSkillUtilityLevel: 0,
+    flatSkillAllLevel: 0,
   };
 }
 

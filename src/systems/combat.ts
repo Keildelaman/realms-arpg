@@ -32,6 +32,7 @@ import {
   AFFIX_FROST_NOVA_DAMAGE_MULT,
 } from '@/data/constants';
 import { calculateDamage, deathMilestoneLevel } from '@/data/balance';
+import { safeResolvePosition } from './expedition-generation';
 
 // --- Internal state ---
 
@@ -200,10 +201,14 @@ export function damageMonster(
   // Armor flat reduction (armored monster type)
   const armorReduction = monster.armor;
 
-  // Calculate damage with crit, armor, and defense
+  // Armor penetration: reduce effective defense by player's armorPen fraction
+  const player = getPlayer();
+  const effectiveDefense = Math.max(0, monster.defense * (1 - player.armorPen));
+
+  // Calculate damage with crit, armor, and (penetrated) defense
   const { damage: calculatedDamage, isCrit } = calculateDamage(
     rawDamage,
-    monster.defense,
+    effectiveDefense,
     critChance,
     critDmgMul,
     armorReduction,
@@ -236,7 +241,6 @@ export function damageMonster(
   monster.currentHP = Math.max(0, monster.currentHP - finalDamage);
 
   // Knockback: push monster away from player
-  const player = getPlayer();
   const kbDx = monster.x - player.x;
   const kbDy = monster.y - player.y;
   const kbDist = Math.sqrt(kbDx * kbDx + kbDy * kbDy);
@@ -244,9 +248,20 @@ export function damageMonster(
   const fromX = monster.x;
   const fromY = monster.y;
   if (kbDist > 0) {
-    // Update logical position instantly (game systems see correct position)
-    monster.x += (kbDx / kbDist) * knockbackDist;
-    monster.y += (kbDy / kbDist) * knockbackDist;
+    const kbTargetX = monster.x + (kbDx / kbDist) * knockbackDist;
+    const kbTargetY = monster.y + (kbDy / kbDist) * knockbackDist;
+    const state = getState();
+    if (state.activeExpedition) {
+      const resolved = safeResolvePosition(
+        state.activeExpedition.map, monster.x, monster.y,
+        kbTargetX, kbTargetY, Math.max(10, monster.size * 0.35),
+      );
+      monster.x = resolved.x;
+      monster.y = resolved.y;
+    } else {
+      monster.x = kbTargetX;
+      monster.y = kbTargetY;
+    }
   }
 
   // Track player stats
@@ -341,9 +356,16 @@ export function damagePlayer(amount: number, source: string): number {
   // Invulnerability check — dashing or recently hit
   if (player.isInvulnerable || player.isDashing) return 0;
 
+  // Dodge check — chance to avoid damage entirely
+  if (player.dodgeChance > 0 && Math.random() < player.dodgeChance) {
+    emit('combat:miss', { targetId: 'player', x: player.x, y: player.y });
+    return 0;
+  }
+
   // Apply defense reduction
   const reduction = player.defense / (player.defense + DEFENSE_CONSTANT);
-  const finalDamage = Math.max(MIN_DAMAGE, Math.floor(amount * (1 - reduction)));
+  // Apply flat damage reduction from equipment (capped at 0.75 by player.ts)
+  const finalDamage = Math.max(MIN_DAMAGE, Math.floor(amount * (1 - reduction) * (1 - player.damageReduction)));
 
   // Apply damage
   const actualDamage = Math.min(player.currentHP, finalDamage);
@@ -476,10 +498,22 @@ function checkMonsterProjectileHits(): void {
 
       // Apply knockback in projectile direction
       if (actualDamage > 0) {
-        const dist = Math.sqrt(proj.velocityX * proj.velocityX + proj.velocityY * proj.velocityY);
-        if (dist > 0) {
-          player.x += (proj.velocityX / dist) * MONSTER_PROJECTILE_PLAYER_KNOCKBACK;
-          player.y += (proj.velocityY / dist) * MONSTER_PROJECTILE_PLAYER_KNOCKBACK;
+        const projDist = Math.sqrt(proj.velocityX * proj.velocityX + proj.velocityY * proj.velocityY);
+        if (projDist > 0) {
+          const kbX = player.x + (proj.velocityX / projDist) * MONSTER_PROJECTILE_PLAYER_KNOCKBACK;
+          const kbY = player.y + (proj.velocityY / projDist) * MONSTER_PROJECTILE_PLAYER_KNOCKBACK;
+          const state = getState();
+          if (state.activeExpedition) {
+            const resolved = safeResolvePosition(
+              state.activeExpedition.map, player.x, player.y,
+              kbX, kbY, PLAYER_BODY_RADIUS,
+            );
+            player.x = resolved.x;
+            player.y = resolved.y;
+          } else {
+            player.x = kbX;
+            player.y = kbY;
+          }
         }
       }
 

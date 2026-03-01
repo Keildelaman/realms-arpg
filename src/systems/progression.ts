@@ -36,7 +36,9 @@ export function grantXP(amount: number): void {
 
   // Apply ascension XP bonus: +5% per ascension level
   const ascensionMultiplier = 1 + player.ascensionLevel * 0.05;
-  const finalXP = Math.floor(amount * ascensionMultiplier);
+  // Apply XP bonus from equipment
+  const xpBonusMultiplier = 1 + player.xpBonus;
+  const finalXP = Math.floor(amount * ascensionMultiplier * xpBonusMultiplier);
 
   // Add XP to player state
   addXP(finalXP);

@@ -64,22 +64,9 @@ function onStatsChanged(): void {
     player.currentHP = Math.min(player.currentHP, player.maxHP);
   }
 
-  // Read HP regen from equipment (future: sum from item affixes)
-  // For now, equipmentHPRegen is set by the player system via statsChanged
-  // We scan equipment for hpRegen affixes
-  let regenSum = 0;
-  const equipment = player.equipment;
-  for (const slot of Object.keys(equipment) as Array<keyof typeof equipment>) {
-    const item = equipment[slot];
-    if (!item) continue;
-    for (const affix of item.affixes) {
-      // Convention: affixes with id containing 'hpRegen' contribute to HP regen
-      if (affix.id.includes('hpRegen')) {
-        regenSum += affix.value;
-      }
-    }
-  }
-  equipmentHPRegen = regenSum;
+  // Read HP regen rate from player state (set by player.ts recalculateStats).
+  // player.hpRegen is a fraction of maxHP per second (e.g., 0.005 = 0.5%/sec).
+  equipmentHPRegen = player.hpRegen * player.maxHP;
 }
 
 function onLevelUp(data: { level: number; hpGain: number }): void {

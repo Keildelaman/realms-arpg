@@ -29,8 +29,10 @@ import {
   DEFENSE_CONSTANT,
   DASH_SPEED,
   DASH_DURATION,
+  PLAYER_BODY_RADIUS,
 } from '@/data/constants';
 import { SKILLS } from '@/data/skills.data';
+import { safeResolvePosition, resolveMovementAgainstMap } from './expedition-generation';
 
 // --- Internal types ---
 
@@ -56,30 +58,81 @@ function getSkillDef(skillId: string): SkillDefinition | undefined {
 }
 
 function getSkillLevelData(skillId: string): SkillLevelData | undefined {
+  return getEffectiveSkillLevelData(skillId);
+}
+
+/**
+ * Get the effective skill level, adding category-specific and all-skill level bonuses.
+ */
+function getEffectiveSkillLevel(skillId: string): number {
+  const def = getSkillDef(skillId);
+  if (!def) return 0;
+
+  const player = getPlayer();
+  const base = player.skillLevels[skillId] ?? 0;
+  if (base <= 0) return 0;
+
+  let bonus = player.skillAllLevel;
+  switch (def.category) {
+    case 'power':   bonus += player.skillPowerLevel; break;
+    case 'speed':   bonus += player.skillSpeedLevel; break;
+    case 'crit':    bonus += player.skillCritLevel; break;
+    case 'mage':    bonus += player.skillMageLevel; break;
+    case 'utility': bonus += player.skillUtilityLevel; break;
+  }
+
+  // Cap at max defined levels in the skill definition
+  const maxLevel = def.levels.length;
+  return Math.min(maxLevel, base + bonus);
+}
+
+/**
+ * Get skill level data using effective (bonus-adjusted) level.
+ */
+function getEffectiveSkillLevelData(skillId: string): SkillLevelData | undefined {
   const def = getSkillDef(skillId);
   if (!def) return undefined;
 
-  const player = getPlayer();
-  const level = player.skillLevels[skillId] ?? 0;
-  if (level <= 0) return undefined;
+  const effectiveLevel = getEffectiveSkillLevel(skillId);
+  if (effectiveLevel <= 0) return undefined;
 
-  return def.levels[level - 1];
+  return def.levels[effectiveLevel - 1];
+}
+
+/**
+ * Get the category damage boost for a skill.
+ */
+function getSkillCategoryBoost(skillId: string): number {
+  const def = getSkillDef(skillId);
+  if (!def) return 0;
+
+  const player = getPlayer();
+  switch (def.category) {
+    case 'power':   return player.skillPowerBoost;
+    case 'speed':   return player.skillSpeedBoost;
+    case 'crit':    return player.skillCritBoost;
+    case 'mage':    return player.skillMageBoost;
+    case 'utility': return player.skillUtilityBoost;
+    default:        return 0;
+  }
 }
 
 /**
  * Calculate raw base damage for a skill hit.
- * baseDamage = skill.levels[level-1].damage * (physical ? player.attack : player.magicPower)
+ * baseDamage = skill.levels[effectiveLevel-1].damage * (physical ? player.attack : player.magicPower)
+ * Multiplied by (1 + skill category boost).
  */
 function calculateSkillBaseDamage(skillId: string): number {
   const def = getSkillDef(skillId);
   if (!def) return 0;
 
-  const levelData = getSkillLevelData(skillId);
+  const levelData = getEffectiveSkillLevelData(skillId);
   if (!levelData) return 0;
 
   const player = getPlayer();
   const statValue = def.damageType === 'magic' ? player.magicPower : player.attack;
-  return Math.floor(levelData.damage * statValue);
+  const categoryBoost = getSkillCategoryBoost(skillId);
+  return Math.floor(levelData.damage * statValue * (1 + categoryBoost));
 }
 
 /**
@@ -110,8 +163,9 @@ function applyDamageToMonster(
   // Armor flat reduction
   baseDmg = Math.max(0, baseDmg - monster.armor);
 
-  // Defense % reduction
-  const reduction = monster.defense / (monster.defense + DEFENSE_CONSTANT);
+  // Defense % reduction (armor penetration reduces effective defense)
+  const effectiveDefense = Math.max(0, monster.defense * (1 - player.armorPen));
+  const reduction = effectiveDefense / (effectiveDefense + DEFENSE_CONSTANT);
   let finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
 
   // Shield mechanics
@@ -359,11 +413,23 @@ function handleShieldBash(data: SkillUsedData): void {
     // Knockback: push target away from player
     const dx = monster.x - data.x;
     const dy = monster.y - data.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > 0) {
+    const kbDist = Math.sqrt(dx * dx + dy * dy);
+    if (kbDist > 0) {
       const knockbackDist = 60;
-      monster.x += (dx / dist) * knockbackDist;
-      monster.y += (dy / dist) * knockbackDist;
+      const kbTargetX = monster.x + (dx / kbDist) * knockbackDist;
+      const kbTargetY = monster.y + (dy / kbDist) * knockbackDist;
+      const state = getState();
+      if (state.activeExpedition) {
+        const resolved = safeResolvePosition(
+          state.activeExpedition.map, monster.x, monster.y,
+          kbTargetX, kbTargetY, Math.max(10, monster.size * 0.35),
+        );
+        monster.x = resolved.x;
+        monster.y = resolved.y;
+      } else {
+        monster.x = kbTargetX;
+        monster.y = kbTargetY;
+      }
     }
 
     // 1s stun: set monster AI to stunned
@@ -1004,10 +1070,33 @@ export function update(dt: number): void {
   if (dashState.active) {
     dashState.elapsed += dt;
     const progress = Math.min(1.0, dashState.elapsed / dashState.duration);
-
     const player = getPlayer();
-    player.x = dashState.startX + (dashState.targetX - dashState.startX) * progress;
-    player.y = dashState.startY + (dashState.targetY - dashState.startY) * progress;
+
+    const frameTargetX = dashState.startX + (dashState.targetX - dashState.startX) * progress;
+    const frameTargetY = dashState.startY + (dashState.targetY - dashState.startY) * progress;
+
+    const state = getState();
+    if (state.activeExpedition) {
+      const resolved = resolveMovementAgainstMap(
+        state.activeExpedition.map,
+        player.x, player.y,
+        frameTargetX, frameTargetY,
+        PLAYER_BODY_RADIUS,
+      );
+      // End dash early if completely blocked on both axes
+      const blockedX = Math.abs(resolved.x - frameTargetX) > 2;
+      const blockedY = Math.abs(resolved.y - frameTargetY) > 2;
+      player.x = resolved.x;
+      player.y = resolved.y;
+      if (blockedX && blockedY) {
+        dashState.active = false;
+        player.isDashing = false;
+        player.isInvulnerable = false;
+      }
+    } else {
+      player.x = frameTargetX;
+      player.y = frameTargetY;
+    }
 
     emit('player:moved', { x: player.x, y: player.y });
 

@@ -58,11 +58,11 @@ export interface EquipmentStatBonuses {
   freezePotency: number;
 
   // Skill power (category damage boosts)
-  skillPowerDmg: number;
-  skillSpeedDmg: number;
-  skillCritDmg: number;
-  skillMageDmg: number;
-  skillUtilityDmg: number;
+  skillPowerBoost: number;
+  skillSpeedBoost: number;
+  skillCritBoost: number;
+  skillMageBoost: number;
+  skillUtilityBoost: number;
 
   // Skill levels
   skillPowerLevel: number;
@@ -113,11 +113,11 @@ function emptyBonuses(): EquipmentStatBonuses {
     slowPotency: 0,
     freezePotency: 0,
 
-    skillPowerDmg: 0,
-    skillSpeedDmg: 0,
-    skillCritDmg: 0,
-    skillMageDmg: 0,
-    skillUtilityDmg: 0,
+    skillPowerBoost: 0,
+    skillSpeedBoost: 0,
+    skillCritBoost: 0,
+    skillMageBoost: 0,
+    skillUtilityBoost: 0,
 
     skillPowerLevel: 0,
     skillSpeedLevel: 0,

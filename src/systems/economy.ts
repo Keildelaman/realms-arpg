@@ -34,7 +34,9 @@ export function grantGold(amount: number): void {
 
   // Apply ascension gold bonus: +5% per ascension level
   const ascensionMultiplier = 1 + player.ascensionLevel * 0.05;
-  const finalGold = Math.floor(amount * ascensionMultiplier);
+  // Apply gold find bonus from equipment
+  const goldFindMultiplier = 1 + player.goldFind;
+  const finalGold = Math.floor(amount * ascensionMultiplier * goldFindMultiplier);
 
   addGold(finalGold);
 
@@ -198,6 +200,18 @@ export function getShopItemPrice(itemIndex: number): number {
 
   const rarityIndex = { common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4 }[item.rarity] ?? 0;
   return itemBasePrice(item.tier, rarityIndex);
+}
+
+/** Returns the current shop refresh count (for save serialization). */
+export function getShopRefreshCount(): number {
+  return shopRefreshCount;
+}
+
+/** Restores shopRefreshCount from a save file. */
+export function restoreShopRefreshCount(count: number): void {
+  shopRefreshCount = Math.max(0, Math.floor(count));
+  // Sync derived cost into state
+  getState().shopRefreshCost = getRefreshCost();
 }
 
 // --- Event handlers ---

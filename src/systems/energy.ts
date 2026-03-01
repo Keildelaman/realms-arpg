@@ -94,21 +94,10 @@ function onDamageDealt(data: {
 }
 
 function onStatsChanged(): void {
-  // Recalculate bonus energy regen from equipment
+  // Read energy regen multiplier from player state (set by player.ts recalculateStats).
+  // player.energyRegen is an additive fraction (e.g., 0.05 = +5% energy/sec).
   const player = getPlayer();
-  let regenSum = 0;
-
-  const equipment = player.equipment;
-  for (const slot of Object.keys(equipment) as Array<keyof typeof equipment>) {
-    const item = equipment[slot];
-    if (!item) continue;
-    for (const affix of item.affixes) {
-      if (affix.id.includes('energyRegen')) {
-        regenSum += affix.value;
-      }
-    }
-  }
-  bonusEnergyRegen = regenSum;
+  bonusEnergyRegen = player.energyRegen;
 }
 
 function onSkillUsed(data: { skillId: string; x: number; y: number; angle: number }): void {
@@ -140,8 +129,8 @@ export function update(dt: number): void {
     return;
   }
 
-  // Passive energy regen
-  const totalRegen = ENERGY_REGEN_PER_SECOND + bonusEnergyRegen;
+  // Passive energy regen: base + equipment boost (fraction multiplier on base)
+  const totalRegen = ENERGY_REGEN_PER_SECOND * (1 + bonusEnergyRegen);
   regenAccumulator += totalRegen * dt;
 
   // Grant whole units
@@ -157,5 +146,5 @@ export function update(dt: number): void {
  * Get the current total energy regen rate (base + bonuses).
  */
 export function getEnergyRegenRate(): number {
-  return ENERGY_REGEN_PER_SECOND + bonusEnergyRegen;
+  return ENERGY_REGEN_PER_SECOND * (1 + bonusEnergyRegen);
 }
