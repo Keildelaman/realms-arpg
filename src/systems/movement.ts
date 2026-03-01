@@ -10,9 +10,10 @@ import {
   DASH_COOLDOWN,
   MOVE_ACCELERATION,
   MOVE_DECELERATION,
+  PLAYER_BODY_RADIUS,
 } from '@/data/constants';
 import { ZONES } from '@/data/zones.data';
-import { resolveMovementAgainstMap } from './expedition-generation';
+import { resolveMovementAgainstMap, isPointWalkable, safeResolvePosition } from './expedition-generation';
 
 // --- Input state ---
 
@@ -325,6 +326,17 @@ export function update(dt: number): void {
   }
   player.x = Math.max(worldX + 16, Math.min(worldX + worldWidth - 16, player.x));
   player.y = Math.max(worldY + 16, Math.min(worldY + worldHeight - 16, player.y));
+
+  // Stuck recovery: if player ended up in an unwalkable cell, snap to nearest walkable
+  if (state.activeExpedition) {
+    if (!isPointWalkable(state.activeExpedition.map, player.x, player.y, PLAYER_BODY_RADIUS)) {
+      const resolved = safeResolvePosition(
+        state.activeExpedition.map, player.x, player.y, player.x, player.y, PLAYER_BODY_RADIUS,
+      );
+      player.x = resolved.x;
+      player.y = resolved.y;
+    }
+  }
 
   // Write velocity to state for visual layer
   player.velocityX = currentVx;

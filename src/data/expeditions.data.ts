@@ -5,6 +5,8 @@
 import type { RoomType } from '@/core/types';
 
 export const EXPEDITION_OBJECTIVE = 'extermination' as const;
+export const EXPEDITION_MAX_TIER = 10;
+export const EXPEDITION_BOSS_GATE_TIER = EXPEDITION_MAX_TIER;
 
 export const ROOM_COUNT_BY_TIER: Record<number, [number, number]> = {
   1: [4, 5],
@@ -14,6 +16,9 @@ export const ROOM_COUNT_BY_TIER: Record<number, [number, number]> = {
   5: [6, 7],
   6: [7, 8],
   7: [7, 8],
+  8: [8, 9],
+  9: [9, 10],
+  10: [10, 11],
 };
 
 export const MAP_GEN_MAX_ATTEMPTS = 32;
@@ -52,9 +57,9 @@ export const RESPAWN_INVULNERABILITY_SECONDS = 2.0;
 export const PLAYER_RESPAWN_FULL_HEAL = true;
 export const PLAYER_RESPAWN_FULL_ENERGY = true;
 
-export const COMPLETION_XP_BY_TIER = [0, 80, 170, 320, 560, 900, 1350, 2000] as const;
-export const COMPLETION_GOLD_BY_TIER = [0, 120, 260, 470, 760, 1150, 1650, 2400] as const;
-export const COMPLETION_CHEST_COUNT_BY_TIER = [0, 1, 1, 1, 1, 2, 2, 2] as const;
+export const COMPLETION_XP_BY_TIER = [0, 80, 170, 320, 560, 900, 1350, 2000, 2850, 3900, 5200] as const;
+export const COMPLETION_GOLD_BY_TIER = [0, 120, 260, 470, 760, 1150, 1650, 2400, 3400, 4600, 6100] as const;
+export const COMPLETION_CHEST_COUNT_BY_TIER = [0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3] as const;
 
 export const FIRST_CLEAR_XP_MULT = 0.5;
 export const FIRST_CLEAR_GOLD_MULT = 0.5;
@@ -64,7 +69,7 @@ export const EXPEDITION_PACK_SIZE_MULT = 1.18;
 export const EXPEDITION_CHECKPOINT_KILL_INTERVAL_MULT = 1.15;
 
 export function clampTier(tier: number): number {
-  return Math.max(1, Math.min(7, Math.floor(tier)));
+  return Math.max(1, Math.min(EXPEDITION_MAX_TIER, Math.floor(tier)));
 }
 
 export function getTierRange(

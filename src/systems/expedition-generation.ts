@@ -43,6 +43,13 @@ import {
   clampTier,
   getTierRange,
 } from '@/data/expeditions.data';
+import { GAME_WIDTH, GAME_HEIGHT } from '@/data/constants';
+import {
+  getExpeditionMapSizeScale,
+  getExpeditionEncounterPointCellDivisor,
+  getExpeditionEncounterPointMinCount,
+  getExpeditionEncounterPointMinDistance,
+} from '@/data/expedition-progression.data';
 
 interface GenerationConfig {
   zoneId: string;
@@ -163,9 +170,15 @@ function nodePos(node: FieldNode): Vec2 {
   return { x: node.x, y: node.y };
 }
 
-function generateFieldNodes(rng: SeededRng, tier: number, count: number): FieldNode[] | null {
+function generateFieldNodes(
+  rng: SeededRng,
+  tier: number,
+  count: number,
+  compactScale = 1,
+): FieldNode[] | null {
   const nodes: FieldNode[] = [];
-  const baseRadius = MAP_GEN_NODE_RADIUS_BASE + tier * MAP_GEN_NODE_RADIUS_TIER_BONUS;
+  const clampedScale = Math.max(0.35, Math.min(1.2, compactScale));
+  const baseRadius = (MAP_GEN_NODE_RADIUS_BASE + tier * MAP_GEN_NODE_RADIUS_TIER_BONUS) * clampedScale;
 
   nodes.push({
     index: 0,
@@ -186,8 +199,8 @@ function generateFieldNodes(rng: SeededRng, tier: number, count: number): FieldN
 
       heading += rng.float(-0.75, 0.75);
       const step = rng.float(
-        MAP_GEN_STEP_MIN,
-        MAP_GEN_STEP_MAX + tier * MAP_GEN_STEP_TIER_BONUS,
+        MAP_GEN_STEP_MIN * clampedScale,
+        (MAP_GEN_STEP_MAX + tier * MAP_GEN_STEP_TIER_BONUS) * clampedScale,
       );
       const angle = heading + rng.float(-0.45, 0.45);
 
@@ -676,6 +689,7 @@ function buildGridAndWalls(
   corridors: ExpeditionCorridor[],
   spawnNode: FieldNode,
   rng: SeededRng,
+  layoutMargin: number,
 ): {
   bounds: { x: number; y: number; width: number; height: number };
   grid: {
@@ -712,10 +726,10 @@ function buildGridAndWalls(
     }
   }
 
-  minX -= MAP_GEN_LAYOUT_MARGIN;
-  minY -= MAP_GEN_LAYOUT_MARGIN;
-  maxX += MAP_GEN_LAYOUT_MARGIN;
-  maxY += MAP_GEN_LAYOUT_MARGIN;
+  minX -= layoutMargin;
+  minY -= layoutMargin;
+  maxX += layoutMargin;
+  maxY += layoutMargin;
 
   const originX = Math.floor(minX / cell) * cell;
   const originY = Math.floor(minY / cell) * cell;
@@ -945,8 +959,17 @@ function normalizeToOrigin(
     walkable: number[];
   };
 } {
-  const shiftX = -bounds.x;
-  const shiftY = -bounds.y;
+  // Keep very small maps centered inside a minimum world canvas so the camera
+  // never exposes untextured void/background color around the playable area.
+  const minWorldWidth = GAME_WIDTH + grid.cellSize * 2;
+  const minWorldHeight = GAME_HEIGHT + grid.cellSize * 2;
+  const targetWidth = Math.max(bounds.width, minWorldWidth);
+  const targetHeight = Math.max(bounds.height, minWorldHeight);
+  const padLeft = Math.floor((targetWidth - bounds.width) * 0.5);
+  const padTop = Math.floor((targetHeight - bounds.height) * 0.5);
+
+  const shiftX = -bounds.x + padLeft;
+  const shiftY = -bounds.y + padTop;
 
   for (const room of rooms) {
     room.x += shiftX;
@@ -974,8 +997,8 @@ function normalizeToOrigin(
     bounds: {
       x: 0,
       y: 0,
-      width: bounds.width,
-      height: bounds.height,
+      width: targetWidth,
+      height: targetHeight,
     },
     grid: {
       ...grid,
@@ -1009,10 +1032,12 @@ function buildEncounterPoints(
     walkable: number[];
   },
   rng: SeededRng,
+  zoneId: string,
   tier: number,
+  mapSizeScale: number,
 ): ExpeditionEncounterPoint[] {
   const points: ExpeditionEncounterPoint[] = [];
-  const minDist = 160;
+  const minDist = getExpeditionEncounterPointMinDistance(zoneId, tier);
 
   const walkableCells: Array<{ x: number; y: number }> = [];
   for (let y = 0; y < grid.height; y++) {
@@ -1023,11 +1048,13 @@ function buildEncounterPoints(
       }
     }
   }
-  const areaTarget = Math.round(walkableCells.length / 58);
-  const tierTarget = 34 + tier * 6;
-  const target = Math.max(28, tierTarget, areaTarget);
+  const areaDivisor = getExpeditionEncounterPointCellDivisor(zoneId, tier);
+  const areaTarget = Math.round(walkableCells.length / areaDivisor);
+  const budgetTarget = getExpeditionEncounterPointMinCount(zoneId, tier);
+  const scaleTarget = Math.round(10 + mapSizeScale * 16);
+  const target = Math.max(12, budgetTarget, areaTarget, scaleTarget);
 
-  for (let i = 0; i < walkableCells.length * 4 && points.length < target; i++) {
+  for (let i = 0; i < walkableCells.length * 7 && points.length < target; i++) {
     if (walkableCells.length === 0) break;
 
     const cell = walkableCells[rng.int(0, walkableCells.length - 1)];
@@ -1106,11 +1133,22 @@ function validateLayout(nodeCount: number, metrics: ExpeditionLayoutMetrics, enc
 function tryGenerate(config: GenerationConfig, seed: number): ExpeditionMap | null {
   const tier = clampTier(config.tier);
   const rng = new SeededRng(seed);
+  const isTutorialTier = config.zoneId === 'whisperwood' && tier === 1;
+  const mapSizeScale = getExpeditionMapSizeScale(config.zoneId, tier);
 
   const [minRooms, maxRooms] = getTierRange(ROOM_COUNT_BY_TIER, tier, [6, 8]);
-  const nodeCount = rng.int(minRooms + MAP_GEN_NODE_COUNT_BONUS_MIN, maxRooms + MAP_GEN_NODE_COUNT_BONUS_MAX);
+  const scaledNodeBonusMin = Math.round(MAP_GEN_NODE_COUNT_BONUS_MIN * (0.34 + mapSizeScale * 0.42));
+  const scaledNodeBonusMax = Math.round(MAP_GEN_NODE_COUNT_BONUS_MAX * (0.38 + mapSizeScale * 0.48));
+  let nodeCount = rng.int(minRooms + scaledNodeBonusMin, maxRooms + scaledNodeBonusMax);
+  if (isTutorialTier) {
+    // Tutorial-like first map: smaller footprint and simpler navigation.
+    nodeCount = rng.int(5, 6);
+  }
 
-  const nodes = generateFieldNodes(rng, tier, nodeCount);
+  const layoutScale = isTutorialTier
+    ? 0.55
+    : Math.max(0.72, Math.min(1.16, 0.5 + mapSizeScale * 0.47));
+  const nodes = generateFieldNodes(rng, tier, nodeCount, layoutScale);
   if (!nodes) return null;
 
   const graph = buildGraph(nodes, rng);
@@ -1120,7 +1158,11 @@ function tryGenerate(config: GenerationConfig, seed: number): ExpeditionMap | nu
   const corridors = createCorridorsFromGraph(nodes, graph.edges, rng);
 
   const spawnNode = nodes[graph.startIndex];
-  const geometry = buildGridAndWalls(nodes, corridors, spawnNode, rng);
+  const marginScale = isTutorialTier
+    ? 0.45
+    : Math.max(0.64, Math.min(1.14, 0.5 + mapSizeScale * 0.44));
+  const layoutMargin = Math.round(MAP_GEN_LAYOUT_MARGIN * marginScale);
+  const geometry = buildGridAndWalls(nodes, corridors, spawnNode, rng, layoutMargin);
 
   const normalized = normalizeToOrigin(
     roomData.rooms,
@@ -1132,7 +1174,7 @@ function tryGenerate(config: GenerationConfig, seed: number): ExpeditionMap | nu
   );
 
   const metrics = buildMetrics(graph, nodes.length);
-  const encounterPoints = buildEncounterPoints(normalized.grid, rng, tier);
+  const encounterPoints = buildEncounterPoints(normalized.grid, rng, config.zoneId, tier, mapSizeScale);
 
   if (!validateLayout(nodes.length, metrics, encounterPoints.length)) {
     return null;
@@ -1267,4 +1309,52 @@ export function resolveMovementAgainstMap(
   }
 
   return { x: lastX, y: lastY };
+}
+
+/**
+ * Safely resolve a target position against the expedition map.
+ * Uses resolveMovementAgainstMap to sweep from `from` to `to`,
+ * clamping to the last walkable position. If the result is still
+ * unwalkable (edge case), snaps to nearest walkable tile center.
+ */
+export function safeResolvePosition(
+  map: ExpeditionMap,
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  radius: number,
+): { x: number; y: number } {
+  const resolved = resolveMovementAgainstMap(map, fromX, fromY, toX, toY, radius);
+
+  if (isPointWalkable(map, resolved.x, resolved.y, radius)) {
+    return resolved;
+  }
+
+  // Fallback: if from position is walkable, stay there
+  if (isPointWalkable(map, fromX, fromY, radius)) {
+    return { x: fromX, y: fromY };
+  }
+
+  // Last resort: scan nearby cells for a walkable tile center
+  const cs = map.grid.cellSize;
+  const cell = worldToCell(map, resolved.x, resolved.y);
+  for (let r = 1; r <= 5; r++) {
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue; // only border cells
+        const cx = cell.x + dx;
+        const cy = cell.y + dy;
+        if (isCellWalkable(map, cx, cy)) {
+          return {
+            x: map.grid.originX + (cx + 0.5) * cs,
+            y: map.grid.originY + (cy + 0.5) * cs,
+          };
+        }
+      }
+    }
+  }
+
+  // If nothing found, return the from position as-is
+  return { x: fromX, y: fromY };
 }
