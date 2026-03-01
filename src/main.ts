@@ -4,6 +4,13 @@ import { HubScene } from './scenes/HubScene';
 import { GameScene } from './scenes/GameScene';
 import { UIScene } from './scenes/UIScene';
 import { GAME_WIDTH, GAME_HEIGHT } from './data/constants';
+import { loadGame, applySave, init as initSave } from './core/save';
+
+// Load and apply save BEFORE Phaser boots so every scene sees restored state
+const existingSave = loadGame();
+if (existingSave) {
+  applySave(existingSave);
+}
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -26,6 +33,9 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 const game = new Phaser.Game(config);
+
+// Wire auto-save event listeners
+initSave();
 
 // Expose game state on window for Playwright testing
 if (typeof window !== 'undefined' && window.location.search.includes('test=1')) {
