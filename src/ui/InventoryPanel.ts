@@ -13,28 +13,31 @@ import { formatAffixValue, formatAffixName } from '@/ui/item-format';
 import {
   INVENTORY_SIZE,
   RARITY_COLORS,
-  SELL_PRICE_RATIO,
   COLORS,
 } from '@/data/constants';
+import { UI_THEME, drawPanelShell, drawSectionCard, drawDivider, drawPillButton, type UiButtonState } from '@/ui/ui-theme';
 
 // --- Layout constants ---
 
-const PANEL_WIDTH = 380;
-const PANEL_HEIGHT = 580;
-const SLOT_SIZE = 44;
-const SLOT_GAP = 4;
+const PANEL_WIDTH = 500;
+const PANEL_HEIGHT = 768;
+const SLOT_SIZE = 50;
+const SLOT_GAP = 5;
 const GRID_COLS = 6;
 const EQUIP_SLOT_SIZE = 48;
 const EQUIP_SLOT_GAP = 6;
 
 // Section Y offsets (relative to panelY)
 const SECTION_TITLE_Y = 8;
-const SECTION_EQUIP_Y = 36;
-const SECTION_STATS_Y = 158;
-const SECTION_GRID_Y = 330;
-const SECTION_GOLD_Y = 552;
+const SECTION_EQUIP_Y = 42;
+const SECTION_STATS_Y = 186;
+const SECTION_GRID_Y = 454;
+const SECTION_GOLD_Y = 744;
 
 const TOOLTIP_MARGIN = 10;
+const SORT_BTN_W = 60;
+const SORT_BTN_H = 22;
+const SORT_BTN_GAP = 8;
 
 const RARITY_BORDER_COLORS: Record<Rarity, number> = {
   common:    0xb0b0b0,
@@ -57,6 +60,14 @@ const EQUIP_LAYOUT: Record<EquipmentSlot, { col: number; row: number; label: str
 interface Tooltip {
   container: Phaser.GameObjects.Container;
 }
+
+interface StatRow {
+  label: string;
+  value: string;
+  help: string;
+}
+
+type StatPage = 'summary' | 'offense' | 'defense' | 'utility' | 'status';
 
 // --- Helper: compute equipment slot screen position (top-left corner of slot) ---
 
@@ -84,7 +95,7 @@ function invSlotPos(index: number, panelX: number, panelY: number): { x: number;
   const gx = invGridStartX(panelX);
   return {
     x: gx + col * (SLOT_SIZE + SLOT_GAP),
-    y: panelY + SECTION_GRID_Y + 20 + row * (SLOT_SIZE + SLOT_GAP),
+    y: panelY + SECTION_GRID_Y + 35 + row * (SLOT_SIZE + SLOT_GAP),
   };
 }
 
@@ -104,16 +115,30 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
   // Dynamic objects cleared and recreated on each refresh
   private dynamicGfx: Phaser.GameObjects.Graphics[] = [];
   private dynamicTexts: Phaser.GameObjects.Text[] = [];
+  private dynamicZones: Phaser.GameObjects.Zone[] = [];
 
   // Interactive zones (persistent, repositioned on resize)
   private equipSlotZones: Map<EquipmentSlot, Phaser.GameObjects.Zone> = new Map();
   private inventorySlotZones: Phaser.GameObjects.Zone[] = [];
+
+  // Sort button zones
+  private sortRarityZone!: Phaser.GameObjects.Zone;
+  private sortSlotZone!: Phaser.GameObjects.Zone;
+  private sortNameZone!: Phaser.GameObjects.Zone;
 
   // Tooltip (scene-level object, null when hidden)
   private tooltip: Tooltip | null = null;
 
   private panelX: number;
   private panelY: number;
+
+  // Drag-source tracking for gray-out
+  private dragSourceIndex: number | null = null;
+  private hoveredSort: 'rarity' | 'slot' | 'name' | null = null;
+  private statPage: StatPage = 'summary';
+
+  // New-item indicator tracking (session-only, never persisted)
+  private newItemIds: Set<string> = new Set();
 
   constructor(scene: Phaser.Scene) {
     super(scene, 0, 0);
@@ -130,10 +155,10 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
     this.add(this.panelBg);
 
     // Title
-    this.titleText = scene.add.text(0, 0, 'INVENTORY', {
+    this.titleText = scene.add.text(0, 0, 'CHARACTER', {
       fontFamily: 'monospace',
-      fontSize: '14px',
-      color: COLORS.uiText,
+      fontSize: '18px',
+      color: UI_THEME.text,
       stroke: '#000000',
       strokeThickness: 2,
     });
@@ -143,8 +168,8 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
     // Stats header divider label
     this.statsHeaderText = scene.add.text(0, 0, '', {
       fontFamily: 'monospace',
-      fontSize: '10px',
-      color: COLORS.uiTextDim,
+      fontSize: '11px',
+      color: UI_THEME.textDim,
     });
     this.add(this.statsHeaderText);
 
@@ -169,20 +194,29 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
     // Gold display
     this.goldText = scene.add.text(0, 0, '', {
       fontFamily: 'monospace',
-      fontSize: '13px',
+      fontSize: '14px',
       color: COLORS.gold,
       stroke: '#000000',
       strokeThickness: 2,
     });
     this.add(this.goldText);
+    this.statsHeaderText.setVisible(false);
+    this.statsLeft.setVisible(false);
+    this.statsRight.setVisible(false);
 
     // Create interactive zones
     this.createEquipmentZones();
     this.createInventoryZones();
+    this.createSortZones();
 
     // Subscribe to events
     on('ui:inventoryToggle', this.toggle);
     on('player:statsChanged', this.onStatsChanged);
+    on('item:sold', this.onItemSold);
+    on('economy:purchase', this.onPurchase);
+    on('ui:itemDragStart', this.onDragStarted);
+    on('ui:itemDragEnd', this.onDragEnded);
+    on('inventory:itemAdded', this.onItemAdded);
 
     scene.scale.on('resize', this.onResize, this);
   }
@@ -227,18 +261,75 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
 
       const index = i;
       zone.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-        if (pointer.rightButtonDown()) {
-          this.onInventorySlotRightClick(index);
-        } else {
-          this.onInventorySlotClick(index);
+        if (pointer.rightButtonDown()) return; // right-click does nothing
+        const item = getPlayer().inventory[index];
+        if (!item) return;
+        const isCtrlHeld = (pointer.event as MouseEvent).ctrlKey;
+        // Ctrl+click while stash is open → deposit to stash
+        if (isCtrlHeld && getState().stashOpen) {
+          emit('ui:inventoryToStash', { item, fromInventoryIndex: index });
+          return;
         }
+        // Ctrl+click while merchant open → quick-stage the item
+        if (isCtrlHeld && getState().merchantOpen) {
+          emit('ui:stagingQuickMove', { item, fromInventoryIndex: index });
+          return;
+        }
+        emit('ui:itemDragStart', { item, sourceIndex: index, dragSource: 'inventory' });
       });
-      zone.on('pointerover', () => { this.showInventoryTooltip(index); });
+      zone.on('pointerover', () => {
+        this.dismissNewIndicatorAtSlot(index);
+        this.showInventoryTooltip(index);
+      });
       zone.on('pointerout',  () => { this.hideTooltip(); });
 
       this.add(zone);
       this.inventorySlotZones.push(zone);
     }
+  }
+
+  private createSortZones(): void {
+    const rowCy = this.panelY + SECTION_GRID_Y + 10 + SORT_BTN_H / 2;
+    const rightEdge = this.panelX + PANEL_WIDTH - 18;
+
+    this.sortNameZone = this.scene.add.zone(rightEdge - SORT_BTN_W / 2, rowCy, SORT_BTN_W, SORT_BTN_H);
+    this.sortNameZone.setInteractive({ useHandCursor: true });
+    this.sortNameZone.on('pointerdown', () => this.sortInventoryBy('name'));
+    this.sortNameZone.on('pointerover', () => {
+      this.hoveredSort = 'name';
+      if (this.visible) this.refresh();
+    });
+    this.sortNameZone.on('pointerout', () => {
+      if (this.hoveredSort === 'name') this.hoveredSort = null;
+      if (this.visible) this.refresh();
+    });
+    this.add(this.sortNameZone);
+
+    this.sortSlotZone = this.scene.add.zone(rightEdge - SORT_BTN_W - SORT_BTN_GAP - SORT_BTN_W / 2, rowCy, SORT_BTN_W, SORT_BTN_H);
+    this.sortSlotZone.setInteractive({ useHandCursor: true });
+    this.sortSlotZone.on('pointerdown', () => this.sortInventoryBy('slot'));
+    this.sortSlotZone.on('pointerover', () => {
+      this.hoveredSort = 'slot';
+      if (this.visible) this.refresh();
+    });
+    this.sortSlotZone.on('pointerout', () => {
+      if (this.hoveredSort === 'slot') this.hoveredSort = null;
+      if (this.visible) this.refresh();
+    });
+    this.add(this.sortSlotZone);
+
+    this.sortRarityZone = this.scene.add.zone(rightEdge - 2 * (SORT_BTN_W + SORT_BTN_GAP) - SORT_BTN_W / 2, rowCy, SORT_BTN_W, SORT_BTN_H);
+    this.sortRarityZone.setInteractive({ useHandCursor: true });
+    this.sortRarityZone.on('pointerdown', () => this.sortInventoryBy('rarity'));
+    this.sortRarityZone.on('pointerover', () => {
+      this.hoveredSort = 'rarity';
+      if (this.visible) this.refresh();
+    });
+    this.sortRarityZone.on('pointerout', () => {
+      if (this.hoveredSort === 'rarity') this.hoveredSort = null;
+      if (this.visible) this.refresh();
+    });
+    this.add(this.sortRarityZone);
   }
 
   // --- Zone repositioning on resize ---
@@ -255,6 +346,14 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
     }
   }
 
+  private repositionSortZones(): void {
+    const rowCy = this.panelY + SECTION_GRID_Y + 10 + SORT_BTN_H / 2;
+    const rightEdge = this.panelX + PANEL_WIDTH - 18;
+    this.sortNameZone.setPosition(rightEdge - SORT_BTN_W / 2, rowCy);
+    this.sortSlotZone.setPosition(rightEdge - SORT_BTN_W - SORT_BTN_GAP - SORT_BTN_W / 2, rowCy);
+    this.sortRarityZone.setPosition(rightEdge - 2 * (SORT_BTN_W + SORT_BTN_GAP) - SORT_BTN_W / 2, rowCy);
+  }
+
   // --- Drawing ---
 
   private clearDynamic(): void {
@@ -266,34 +365,25 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
       this.remove(txt);
       txt.destroy();
     }
+    for (const zone of this.dynamicZones) {
+      this.remove(zone);
+      zone.destroy();
+    }
     this.dynamicGfx = [];
     this.dynamicTexts = [];
+    this.dynamicZones = [];
   }
 
   private drawPanelBackground(): void {
     const bg = this.panelBg;
     bg.clear();
-
-    // Main background
-    bg.fillStyle(0x111111, 0.93);
-    bg.fillRoundedRect(this.panelX, this.panelY, PANEL_WIDTH, PANEL_HEIGHT, 8);
-
-    // Border
-    bg.lineStyle(2, 0x555555, 0.8);
-    bg.strokeRoundedRect(this.panelX, this.panelY, PANEL_WIDTH, PANEL_HEIGHT, 8);
-
-    // Divider below equipment area
-    bg.lineStyle(1, 0x333333, 0.7);
-    bg.beginPath();
-    bg.moveTo(this.panelX + 12, this.panelY + SECTION_STATS_Y - 4);
-    bg.lineTo(this.panelX + PANEL_WIDTH - 12, this.panelY + SECTION_STATS_Y - 4);
-    bg.strokePath();
-
-    // Divider below stats area
-    bg.beginPath();
-    bg.moveTo(this.panelX + 12, this.panelY + SECTION_GRID_Y - 4);
-    bg.lineTo(this.panelX + PANEL_WIDTH - 12, this.panelY + SECTION_GRID_Y - 4);
-    bg.strokePath();
+    drawPanelShell(bg, this.panelX, this.panelY, PANEL_WIDTH, PANEL_HEIGHT, 10);
+    drawSectionCard(bg, this.panelX + 12, this.panelY + 30, PANEL_WIDTH - 24, 136, false);
+    drawSectionCard(bg, this.panelX + 12, this.panelY + SECTION_STATS_Y, PANEL_WIDTH - 24, 250, true);
+    drawSectionCard(bg, this.panelX + 12, this.panelY + SECTION_GRID_Y, PANEL_WIDTH - 24, 276, false);
+    drawSectionCard(bg, this.panelX + 12, this.panelY + SECTION_GOLD_Y - 6, PANEL_WIDTH - 24, 24, true);
+    drawDivider(bg, this.panelX + 20, this.panelY + SECTION_STATS_Y - 8, this.panelX + PANEL_WIDTH - 20, this.panelY + SECTION_STATS_Y - 8);
+    drawDivider(bg, this.panelX + 20, this.panelY + SECTION_GRID_Y - 8, this.panelX + PANEL_WIDTH - 20, this.panelY + SECTION_GRID_Y - 8);
   }
 
   private drawEquipmentSlots(): void {
@@ -439,22 +529,51 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
 
   private drawInventoryGrid(): void {
     const player = getPlayer();
-    const gx = invGridStartX(this.panelX);
-    const labelY = this.panelY + SECTION_GRID_Y + 4;
+    const labelY = this.panelY + SECTION_GRID_Y + 8;
 
-    // "Backpack" label
-    const label = this.scene.add.text(this.panelX + PANEL_WIDTH / 2, labelY, 'Backpack', {
+    // "Backpack" label — left-aligned
+    const label = this.scene.add.text(this.panelX + 18, labelY, 'Backpack', {
       fontFamily: 'monospace',
-      fontSize: '11px',
-      color: COLORS.uiTextDim,
+      fontSize: '12px',
+      color: UI_THEME.textDim,
     });
-    label.setOrigin(0.5, 0);
+    label.setOrigin(0, 0);
     this.add(label);
     this.dynamicTexts.push(label);
 
+    // Sort buttons — right-aligned (visual only; interaction is on persistent zones)
+    const SORT_BUTTONS: { key: 'rarity' | 'slot' | 'name'; label: string }[] = [
+      { key: 'rarity', label: 'Rarity' },
+      { key: 'slot', label: 'Type' },
+      { key: 'name', label: 'Name' },
+    ];
+    const btnW = SORT_BTN_W;
+    const btnH = SORT_BTN_H;
+    const gap = SORT_BTN_GAP;
+    const rightEdge = this.panelX + PANEL_WIDTH - 18;
+    for (let b = 0; b < SORT_BUTTONS.length; b++) {
+      const tx = rightEdge - (2 - b) * (btnW + gap) - btnW / 2;
+      const btnX = tx - btnW / 2;
+      const buttonGfx = this.scene.add.graphics();
+      const state: UiButtonState = this.hoveredSort === SORT_BUTTONS[b].key ? 'hover' : 'default';
+      drawPillButton(buttonGfx, btnX, labelY - 1, btnW, btnH, state);
+      this.add(buttonGfx);
+      this.dynamicGfx.push(buttonGfx);
+
+      const btnText = this.scene.add.text(tx, labelY, SORT_BUTTONS[b].label, {
+        fontFamily: 'monospace',
+        fontSize: '10px',
+        color: this.hoveredSort === SORT_BUTTONS[b].key ? UI_THEME.text : UI_THEME.textDim,
+      }).setOrigin(0.5, 0.5);
+      btnText.setY(labelY + btnH / 2 - 1);
+      this.add(btnText);
+      this.dynamicTexts.push(btnText);
+    }
+
     for (let i = 0; i < INVENTORY_SIZE; i++) {
       const { x, y } = invSlotPos(i, this.panelX, this.panelY);
-      const item = player.inventory[i] as ItemInstance | undefined;
+      const item = player.inventory[i];
+      const isDragSource = i === this.dragSourceIndex;
 
       const gfx = this.scene.add.graphics();
       this.add(gfx);
@@ -465,7 +584,12 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
       gfx.fillRoundedRect(x, y, SLOT_SIZE, SLOT_SIZE, 2);
 
       if (item) {
-        gfx.lineStyle(2, RARITY_BORDER_COLORS[item.rarity], 1);
+        if (isDragSource) {
+          gfx.setAlpha(0.3);
+          gfx.lineStyle(2, 0x888888, 1);
+        } else {
+          gfx.lineStyle(2, RARITY_BORDER_COLORS[item.rarity], 1);
+        }
         gfx.strokeRoundedRect(x, y, SLOT_SIZE, SLOT_SIZE, 2);
 
         const nameText = this.scene.add.text(
@@ -475,14 +599,26 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
           {
             fontFamily: 'monospace',
             fontSize: '10px',
-            color: RARITY_COLORS[item.rarity],
+            color: isDragSource ? '#888888' : RARITY_COLORS[item.rarity],
             stroke: '#000000',
             strokeThickness: 1,
           }
         );
         nameText.setOrigin(0.5, 0.5);
+        if (isDragSource) nameText.setAlpha(0.3);
         this.add(nameText);
         this.dynamicTexts.push(nameText);
+
+        // New item indicator dot
+        if (this.newItemIds.has(item.id)) {
+          const dotGfx = this.scene.add.graphics();
+          dotGfx.fillStyle(0xffffff, 1);
+          dotGfx.fillCircle(x + SLOT_SIZE - 6, y + 6, 4);
+          dotGfx.lineStyle(1, 0x000000, 0.6);
+          dotGfx.strokeCircle(x + SLOT_SIZE - 6, y + 6, 4);
+          this.add(dotGfx);
+          this.dynamicGfx.push(dotGfx);
+        }
       } else {
         gfx.lineStyle(1, 0x2a2a2a, 0.6);
         gfx.strokeRoundedRect(x, y, SLOT_SIZE, SLOT_SIZE, 2);
@@ -494,36 +630,242 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
 
   private updateStatsPanel(): void {
     const player = getPlayer();
-
-    const atkStr = String(player.attack);
-    const defStr = String(player.defense);
-    const mgkStr = String(player.magicPower);
-    const hpStr  = String(player.maxHP);
-
-    const crtStr = `${(player.critChance  * 100).toFixed(1)}%`;
-    const cdmStr = `${(player.critDamage  * 100).toFixed(0)}%`;
-    const aspStr = player.attackSpeed.toFixed(2);
-    const spdStr = String(player.moveSpeed);
-
-    this.statsLeft.setText(
-      `ATK  ${atkStr}\n` +
-      `DEF  ${defStr}\n` +
-      `MGK  ${mgkStr}\n` +
-      `HP   ${hpStr}`
-    );
-
-    this.statsRight.setText(
-      `CRT  ${crtStr}\n` +
-      `CDM  ${cdmStr}\n` +
-      `ASP  ${aspStr}\n` +
-      `SPD  ${spdStr}`
-    );
-
+    const pct = (value: number, digits = 1): string => `${(value * 100).toFixed(digits)}%`;
     const statsY = this.panelY + SECTION_STATS_Y;
-    this.statsHeaderText.setText('── STATS ─────────────────');
-    this.statsHeaderText.setPosition(this.panelX + 14, statsY + 4);
-    this.statsLeft.setPosition(this.panelX + 14, statsY + 22);
-    this.statsRight.setPosition(this.panelX + PANEL_WIDTH / 2, statsY + 22);
+    const colWidth = Math.floor((PANEL_WIDTH - 56) / 2);
+    const leftX = this.panelX + 20;
+    const rightX = leftX + colWidth + 16;
+
+    const cardTitle = this.scene.add.text(this.panelX + 20, statsY + 10, 'Character Stats', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: UI_THEME.textDim,
+    });
+    this.add(cardTitle);
+    this.dynamicTexts.push(cardTitle);
+    this.drawStatTabs(statsY + 30);
+
+    const offenseRows: StatRow[] = [
+      { label: 'ATK', value: String(player.attack), help: 'Base physical damage used by attacks and many melee skills.' },
+      { label: 'MGK', value: String(player.magicPower), help: 'Base magic damage used by spells and magic-scaling effects.' },
+      { label: 'CRT', value: pct(player.critChance), help: 'Chance for hits to critically strike.' },
+      { label: 'CDM', value: pct(player.critDamage, 0), help: 'Critical damage multiplier when a hit crits.' },
+      { label: 'ASP', value: player.attackSpeed.toFixed(2), help: 'Attack speed multiplier for weapon/basic attacks.' },
+      { label: 'ArmP', value: pct(player.armorPen), help: 'Armor penetration reduces enemy effective defense.' },
+      { label: 'MagP', value: pct(player.magicPen), help: 'Magic penetration reduces enemy effective magic resistance.' },
+    ];
+
+    const defenseRows: StatRow[] = [
+      { label: 'HP', value: String(player.maxHP), help: 'Maximum health pool.' },
+      { label: 'DEF', value: String(player.defense), help: 'Physical mitigation stat used in incoming hit reduction.' },
+      { label: 'MRes', value: String(player.magicResist), help: 'Magic resistance against magical damage.' },
+      { label: 'DR', value: pct(player.damageReduction), help: 'Flat incoming damage reduction from stats and effects.' },
+      { label: 'Dodge', value: pct(player.dodgeChance), help: 'Chance to avoid incoming hit damage entirely.' },
+      { label: 'Regen', value: pct(player.hpRegen), help: 'HP regeneration per second (% max HP).' },
+    ];
+
+    const utilityRows: StatRow[] = [
+      { label: 'SPD', value: String(player.moveSpeed), help: 'Character movement speed in world units.' },
+      { label: 'E-Regen', value: `x${player.energyRegen.toFixed(2)}`, help: 'Energy regeneration multiplier.' },
+      { label: 'LSteal', value: pct(player.lifeSteal), help: 'Life steal from physical damage.' },
+      { label: 'SLeech', value: pct(player.spellLeech), help: 'Leech from magic damage.' },
+      { label: 'Gold+', value: pct(player.goldFind), help: 'Bonus gold gains.' },
+      { label: 'XP+', value: pct(player.xpBonus), help: 'Bonus XP gains.' },
+    ];
+
+    const statusRows: StatRow[] = [
+      { label: 'Potency', value: `x${player.statusPotency.toFixed(2)}`, help: 'Status potency scales status damage and duration.' },
+      { label: 'Bleed', value: pct(player.bleedChance), help: 'Chance to apply bleed on hit.' },
+      { label: 'Poison', value: pct(player.poisonChance), help: 'Chance to apply poison on hit.' },
+      { label: 'Burn', value: pct(player.burnChance), help: 'Chance to apply burn on hit.' },
+      { label: 'Slow', value: pct(player.slowChance), help: 'Chance to apply slow on hit.' },
+      { label: 'Freeze', value: pct(player.freezeChance), help: 'Chance to apply freeze on hit.' },
+    ];
+
+    if (this.statPage === 'summary') {
+      this.drawStatGroup(leftX, statsY + 58, colWidth, 'Offense', offenseRows.slice(0, 4));
+      this.drawStatGroup(leftX, statsY + 160, colWidth, 'Combat', [offenseRows[4], utilityRows[0], offenseRows[5], offenseRows[6]]);
+      this.drawStatGroup(rightX, statsY + 58, colWidth, 'Defense', defenseRows.slice(0, 4));
+      this.drawStatGroup(rightX, statsY + 160, colWidth, 'Status', [statusRows[0], statusRows[1], statusRows[2], statusRows[3]]);
+      return;
+    }
+
+    const pageRows: Record<Exclude<StatPage, 'summary'>, StatRow[]> = {
+      offense: offenseRows,
+      defense: defenseRows,
+      utility: utilityRows,
+      status: statusRows,
+    };
+
+    const rows = pageRows[this.statPage as Exclude<StatPage, 'summary'>];
+    const splitIndex = Math.ceil(rows.length / 2);
+    this.drawStatList(leftX, statsY + 64, colWidth, rows.slice(0, splitIndex));
+    this.drawStatList(rightX, statsY + 64, colWidth, rows.slice(splitIndex));
+  }
+
+  private drawStatTabs(y: number): void {
+    const tabs: { id: StatPage; label: string }[] = [
+      { id: 'summary', label: 'Summary' },
+      { id: 'offense', label: 'Offense' },
+      { id: 'defense', label: 'Defense' },
+      { id: 'utility', label: 'Utility' },
+      { id: 'status', label: 'Status' },
+    ];
+    const gap = 6;
+    const totalWidth = PANEL_WIDTH - 40;
+    const tabW = Math.floor((totalWidth - gap * (tabs.length - 1)) / tabs.length);
+    const tabH = 20;
+    const startX = this.panelX + 20;
+
+    for (let i = 0; i < tabs.length; i++) {
+      const tab = tabs[i];
+      const x = startX + i * (tabW + gap);
+      const state: UiButtonState = this.statPage === tab.id ? 'pressed' : 'default';
+
+      const bg = this.scene.add.graphics();
+      drawPillButton(bg, x, y, tabW, tabH, state, { fill: 0x1e3a8a, border: 0x3b82f6 });
+      this.add(bg);
+      this.dynamicGfx.push(bg);
+
+      const text = this.scene.add.text(x + tabW / 2, y + 2, tab.label, {
+        fontFamily: 'monospace',
+        fontSize: '10px',
+        color: this.statPage === tab.id ? UI_THEME.text : UI_THEME.textDim,
+      }).setOrigin(0.5, 0.5);
+      text.setY(y + tabH / 2);
+      this.add(text);
+      this.dynamicTexts.push(text);
+
+      const zone = this.scene.add.zone(x + tabW / 2, y + tabH / 2, tabW, tabH);
+      zone.setInteractive({ useHandCursor: true });
+      zone.on('pointerdown', () => {
+        this.statPage = tab.id;
+        if (this.visible) this.refresh();
+      });
+      this.add(zone);
+      this.dynamicZones.push(zone);
+    }
+  }
+
+  private drawStatGroup(x: number, y: number, width: number, title: string, rows: StatRow[]): void {
+    const titleText = this.scene.add.text(x, y, title, {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#7dd3fc',
+    });
+    this.add(titleText);
+    this.dynamicTexts.push(titleText);
+
+    const rowStartY = y + 20;
+    const rowHeight = 16;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowY = rowStartY + i * rowHeight;
+
+      const labelText = this.scene.add.text(x, rowY, row.label, {
+        fontFamily: 'monospace',
+        fontSize: '10px',
+        color: UI_THEME.text,
+      });
+      this.add(labelText);
+      this.dynamicTexts.push(labelText);
+
+      const valueText = this.scene.add.text(x + width - 4, rowY, row.value, {
+        fontFamily: 'monospace',
+        fontSize: row.label === 'B/P/Bu' || row.label === 'Sl/Fr' ? '9px' : '10px',
+        color: UI_THEME.text,
+      }).setOrigin(1, 0);
+      this.add(valueText);
+      this.dynamicTexts.push(valueText);
+
+      const zone = this.scene.add.zone(x + width / 2, rowY + rowHeight / 2, width, rowHeight + 2);
+      zone.setInteractive({ useHandCursor: true });
+      zone.on('pointerover', (pointer: Phaser.Input.Pointer) => {
+        this.showStatTooltip(row.label, row.help, pointer.x + 12, pointer.y + 10);
+      });
+      zone.on('pointerout', () => {
+        this.hideTooltip();
+      });
+      this.add(zone);
+      this.dynamicZones.push(zone);
+    }
+  }
+
+  private drawStatList(x: number, y: number, width: number, rows: StatRow[]): void {
+    const rowHeight = 22;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowY = y + i * rowHeight;
+
+      const rowBg = this.scene.add.graphics();
+      rowBg.fillStyle(0x111c2e, 0.45);
+      rowBg.fillRoundedRect(x - 2, rowY - 1, width + 4, rowHeight - 2, 4);
+      this.add(rowBg);
+      this.dynamicGfx.push(rowBg);
+
+      const labelText = this.scene.add.text(x + 4, rowY + 2, row.label, {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color: UI_THEME.textDim,
+      });
+      this.add(labelText);
+      this.dynamicTexts.push(labelText);
+
+      const valueText = this.scene.add.text(x + width - 4, rowY + 2, row.value, {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color: UI_THEME.text,
+      }).setOrigin(1, 0);
+      this.add(valueText);
+      this.dynamicTexts.push(valueText);
+
+      const zone = this.scene.add.zone(x + width / 2, rowY + rowHeight / 2, width, rowHeight);
+      zone.setInteractive({ useHandCursor: true });
+      zone.on('pointerover', (pointer: Phaser.Input.Pointer) => {
+        this.showStatTooltip(row.label, row.help, pointer.x + 12, pointer.y + 10);
+      });
+      zone.on('pointerout', () => {
+        this.hideTooltip();
+      });
+      this.add(zone);
+      this.dynamicZones.push(zone);
+    }
+  }
+
+  private showStatTooltip(stat: string, description: string, x: number, y: number): void {
+    this.hideTooltip();
+    const container = this.scene.add.container(0, 0);
+    container.setScrollFactor(0);
+    container.setDepth(250);
+
+    const bg = this.scene.add.graphics();
+    container.add(bg);
+
+    const title = this.scene.add.text(8, 6, stat, {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#7dd3fc',
+    });
+    const body = this.scene.add.text(8, 22, description, {
+      fontFamily: 'monospace',
+      fontSize: '10px',
+      color: UI_THEME.text,
+      wordWrap: { width: 220 },
+    });
+    container.add(title);
+    container.add(body);
+
+    const width = Math.max(title.width, body.width) + 16;
+    const height = body.y + body.height + 8;
+    bg.fillStyle(0x0b1220, 0.96);
+    bg.fillRoundedRect(0, 0, width, height, 6);
+    bg.lineStyle(1, 0x334155, 0.9);
+    bg.strokeRoundedRect(0, 0, width, height, 6);
+
+    const clampedX = Math.max(8, Math.min(x, this.scene.scale.width - width - 8));
+    const clampedY = Math.max(8, Math.min(y, this.scene.scale.height - height - 8));
+    container.setPosition(clampedX, clampedY);
+    this.tooltip = { container };
   }
 
   // --- Gold display ---
@@ -579,24 +921,6 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
     this.refresh();
   }
 
-  private onInventorySlotRightClick(index: number): void {
-    const player = getPlayer();
-    const item = player.inventory[index];
-    if (!item) return;
-
-    const sellPrice = Math.floor(
-      (item.tier * 100 + item.affixes.length * 50) * SELL_PRICE_RATIO
-    );
-
-    removeFromInventory(item.id);
-    player.gold += sellPrice;
-    player.totalGoldEarned += sellPrice;
-
-    emit('item:sold', { item, gold: sellPrice });
-    emit('economy:goldChanged', { amount: sellPrice, total: player.gold });
-    this.refresh();
-  }
-
   // --- Tooltip ---
 
   private showEquipTooltip(slot: EquipmentSlot): void {
@@ -611,7 +935,7 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
 
   private showInventoryTooltip(index: number): void {
     const player = getPlayer();
-    const item = player.inventory[index] as ItemInstance | undefined;
+    const item = player.inventory[index];
     if (!item) return;
 
     const { x, y } = invSlotPos(index, this.panelX, this.panelY);
@@ -641,7 +965,7 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
     lines.push({ text: `iLvl ${item.itemLevel}  Tier ${item.tier}`, color: COLORS.uiTextDim, size: 10 });
 
     // Separator
-    lines.push({ text: '──────────────────', color: COLORS.uiTextDim, size: 8 });
+    lines.push({ text: '------------------', color: COLORS.uiTextDim, size: 8 });
 
     // Affixes — prefixes first, then suffixes; formatted
     const sortedAffixes = [...item.affixes].sort((a, b) => (b.isPrefix ? 1 : 0) - (a.isPrefix ? 1 : 0));
@@ -655,13 +979,13 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
 
     // Legendary effect
     if (item.legendaryEffect) {
-      lines.push({ text: '──────────────────', color: COLORS.uiTextDim, size: 8 });
+      lines.push({ text: '------------------', color: COLORS.uiTextDim, size: 8 });
       lines.push({ text: item.legendaryEffect, color: RARITY_COLORS.legendary, size: 11 });
     }
 
     // Crafting info
     if (item.isImbued || item.temperLevel > 0) {
-      lines.push({ text: '──────────────────', color: COLORS.uiTextDim, size: 8 });
+      lines.push({ text: '------------------', color: COLORS.uiTextDim, size: 8 });
       if (item.isImbued) lines.push({ text: 'Imbued', color: '#a855f7', size: 9 });
       if (item.temperLevel > 0) {
         lines.push({ text: `Tempered +${item.temperLevel}`, color: '#f97316', size: 9 });
@@ -670,7 +994,7 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
 
     // Comparison diffs
     if (diffs && Object.keys(diffs).length > 0) {
-      lines.push({ text: '─── vs equipped ───', color: COLORS.uiTextDim, size: 9 });
+      lines.push({ text: '-- vs equipped --', color: COLORS.uiTextDim, size: 9 });
       for (const [affixId, diff] of Object.entries(diffs)) {
         const color = diff > 0 ? '#4ade80' : '#f87171';
         lines.push({
@@ -752,6 +1076,7 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
 
   toggle = (): void => {
     const state = getState();
+    if (state.merchantOpen && state.inventoryOpen) return; // never close while merchant open
     state.inventoryOpen = !state.inventoryOpen;
     this.setVisible(state.inventoryOpen);
 
@@ -764,19 +1089,95 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
 
   private onStatsChanged = (): void => {
     if (this.visible) {
-      this.updateStatsPanel();
+      this.refresh();
     }
   };
+
+  private onItemSold = (): void => {
+    if (this.visible) this.refresh();
+  };
+
+  private onPurchase = (): void => {
+    if (this.visible) this.refresh();
+  };
+
+  private onDragStarted = ({ sourceIndex, dragSource }: { item: ItemInstance; sourceIndex: number; dragSource: 'inventory' | 'staging' | 'stash' }): void => {
+    this.dragSourceIndex = dragSource === 'inventory' ? sourceIndex : null;
+    if (this.visible) this.refresh();
+  };
+
+  private onDragEnded = (): void => {
+    this.dragSourceIndex = null;
+    if (this.visible) this.refresh();
+  };
+
+  private onItemAdded = ({ item }: { item: ItemInstance; slotIndex: number }): void => {
+    this.newItemIds.add(item.id);
+    if (this.visible) this.refresh();
+  };
+
+  suppressNewIndicator(itemId: string): void {
+    this.newItemIds.delete(itemId);
+  }
+
+  private dismissNewIndicatorAtSlot(index: number): void {
+    const item = getPlayer().inventory[index];
+    if (!item || !this.newItemIds.has(item.id)) return;
+    this.newItemIds.delete(item.id);
+    if (this.visible) this.refresh();
+  }
+
+  /** Returns the inventory slot index under the given screen point, or null */
+  getInventorySlotBoundsAtPoint(px: number, py: number): number | null {
+    for (let i = 0; i < INVENTORY_SIZE; i++) {
+      const { x, y } = invSlotPos(i, this.panelX, this.panelY);
+      if (px >= x && px <= x + SLOT_SIZE && py >= y && py <= y + SLOT_SIZE) return i;
+    }
+    return null;
+  }
+
+  isPointOverPanel(px: number, py: number): boolean {
+    return (
+      px >= this.panelX && px <= this.panelX + PANEL_WIDTH &&
+      py >= this.panelY && py <= this.panelY + PANEL_HEIGHT
+    );
+  }
 
   private onResize = (gameSize: Phaser.Structs.Size): void => {
     this.panelX = gameSize.width - PANEL_WIDTH - 12;
     this.panelY = (gameSize.height - PANEL_HEIGHT) / 2;
 
     this.repositionZones();
+    this.repositionSortZones();
     if (this.visible) {
       this.refresh();
     }
   };
+
+  private sortInventoryBy(criteria: 'rarity' | 'slot' | 'name'): void {
+    const inv = getPlayer().inventory;
+    const items = inv.filter((i): i is ItemInstance => i !== null);
+
+    const rarityOrder: Record<string, number> = { legendary: 0, epic: 1, rare: 2, uncommon: 3, common: 4 };
+    const slotOrder: Record<string, number> = { weapon: 0, helmet: 1, chest: 2, gloves: 3, boots: 4, accessory: 5 };
+
+    switch (criteria) {
+      case 'rarity':
+        items.sort((a, b) => (rarityOrder[a.rarity] - rarityOrder[b.rarity]) || a.name.localeCompare(b.name));
+        break;
+      case 'slot':
+        items.sort((a, b) => (slotOrder[a.slot] - slotOrder[b.slot]) || (rarityOrder[a.rarity] - rarityOrder[b.rarity]));
+        break;
+      case 'name':
+        items.sort((a, b) => a.name.localeCompare(b.name));
+        break;
+    }
+
+    inv.fill(null);
+    items.forEach((item, i) => { inv[i] = item; });
+    emit('player:statsChanged');
+    this.refresh();
+  }
 
   update(_dt: number): void {
     if (!this.visible) return;
@@ -786,6 +1187,11 @@ export class InventoryPanel extends Phaser.GameObjects.Container {
   destroy(fromScene?: boolean): void {
     off('ui:inventoryToggle', this.toggle);
     off('player:statsChanged', this.onStatsChanged);
+    off('item:sold', this.onItemSold);
+    off('economy:purchase', this.onPurchase);
+    off('ui:itemDragStart', this.onDragStarted);
+    off('ui:itemDragEnd', this.onDragEnded);
+    off('inventory:itemAdded', this.onItemAdded);
     this.scene.scale.off('resize', this.onResize, this);
     this.hideTooltip();
     super.destroy(fromScene);

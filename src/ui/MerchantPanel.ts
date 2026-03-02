@@ -1,12 +1,12 @@
 // ============================================================================
-// MerchantPanel — Centered merchant UI for browsing/buying shop items
-// and selling inventory items. Event-driven, no per-frame update required.
+// MerchantPanel — Shop-only merchant UI. Player inventory auto-opens alongside
+// (managed by UIScene). Drag items from inventory onto the sell zone to sell.
 // ============================================================================
 
 import Phaser from 'phaser';
 import type { ItemInstance, Rarity } from '@/core/types';
-import { getPlayer, getState, addToInventory } from '@/core/game-state';
-import { on, off } from '@/core/event-bus';
+import { getPlayer, getState, addToInventory, isInventoryFull } from '@/core/game-state';
+import { on, off, emit } from '@/core/event-bus';
 import {
   generateShop,
   refreshShop,
@@ -15,41 +15,44 @@ import {
   getRefreshCost,
 } from '@/systems/economy';
 import { generateShopItem } from '@/systems/item-gen';
-import { sellItem, getItemValue } from '@/systems/items';
+import { getItemValue } from '@/systems/items';
 import { formatAffixValue, formatAffixName } from '@/ui/item-format';
 import {
-  INVENTORY_SIZE,
   SHOP_SIZE,
   RARITY_COLORS,
   SELL_PRICE_RATIO,
   COLORS,
 } from '@/data/constants';
+import { UI_THEME, drawPanelShell, drawSectionCard, drawDivider, drawPillButton, type UiButtonState } from '@/ui/ui-theme';
 
 // --- Layout constants ---
 
-const PANEL_WIDTH  = 540;
-const PANEL_HEIGHT = 510;
+const PANEL_WIDTH  = 560;
+const PANEL_HEIGHT = 392;
 
-const SHOP_CARD_W  = 160;
-const SHOP_CARD_H  = 75;
+const SHOP_CARD_W  = 170;
+const SHOP_CARD_H  = 86;
 const SHOP_COLS    = 3;
-const SHOP_GAP     = 8;
+const SHOP_GAP     = 10;
 
-const INV_SLOT     = 40;
-const INV_GAP      = 4;
-const INV_COLS     = 6;
+const MERCHANT_STAGING_SIZE = 6;
+const STAGING_SLOT_SIZE = 52;
+const STAGING_SLOT_GAP  = 6;
 
 // Section Y offsets (relative to panelY)
-const SEC_TITLE    = 10;   // "MERCHANT" heading
-const SEC_SHOP_LBL = 36;   // "── For Sale ──" + [Refresh Xg]
-const SEC_SHOP_GRD = 56;   // 2×3 shop cards
-const SEC_DIV      = 222;  // horizontal divider
-const SEC_INV_LBL  = 230;  // "── Your Items ──"
-const SEC_INV_GRD  = 248;  // 4×6 inventory grid
-const SEC_HINT     = 428;  // hint text
-const SEC_GOLD     = 452;  // gold display
+const SEC_TITLE    = 12;
+const SEC_SHOP_LBL = 40;
+const SEC_SHOP_GRD = 64;
+const SEC_DIV      = 260;
+const SEC_SELL_LBL = 270;
+const SEC_STAGING  = 294;
+const SEC_SELL_BTN = 356;
 
 const TOOLTIP_MARGIN = 10;
+
+// InventoryPanel layout ref — used to position merchant left of inventory
+const INV_PANEL_WIDTH  = 500;
+const INV_PANEL_MARGIN = 12;
 
 const RARITY_BORDER_COLORS: Record<Rarity, number> = {
   common:    0xb0b0b0,
@@ -72,14 +75,12 @@ function shopCardPos(index: number, panelX: number, panelY: number): { x: number
   };
 }
 
-function invSlotPos(index: number, panelX: number, panelY: number): { x: number; y: number } {
-  const col = index % INV_COLS;
-  const row = Math.floor(index / INV_COLS);
-  const totalW = INV_COLS * INV_SLOT + (INV_COLS - 1) * INV_GAP;
+function stagingSlotPos(index: number, panelX: number, panelY: number): { x: number; y: number } {
+  const totalW = MERCHANT_STAGING_SIZE * STAGING_SLOT_SIZE + (MERCHANT_STAGING_SIZE - 1) * STAGING_SLOT_GAP;
   const startX = panelX + (PANEL_WIDTH - totalW) / 2;
   return {
-    x: startX + col * (INV_SLOT + INV_GAP),
-    y: panelY + SEC_INV_GRD + row * (INV_SLOT + INV_GAP),
+    x: startX + index * (STAGING_SLOT_SIZE + STAGING_SLOT_GAP),
+    y: panelY + SEC_STAGING,
   };
 }
 
@@ -92,25 +93,35 @@ interface TooltipHandle {
 // ============================================================================
 
 export class MerchantPanel extends Phaser.GameObjects.Container {
-  // Persistent objects (created once)
+  // Persistent graphics/text (created once, repositioned on resize)
   private panelBg: Phaser.GameObjects.Graphics;
   private titleText: Phaser.GameObjects.Text;
   private goldText: Phaser.GameObjects.Text;
-  private hintText: Phaser.GameObjects.Text;
+  private closeText: Phaser.GameObjects.Text;
 
   // Dynamic objects cleared and recreated on each refresh
   private dynamicGfx: Phaser.GameObjects.Graphics[] = [];
   private dynamicTexts: Phaser.GameObjects.Text[] = [];
 
-  // Interactive zones (persistent, repositioned on resize)
+  // Interactive zones (persistent)
   private shopItemZones: Phaser.GameObjects.Zone[] = [];
-  private inventorySlotZones: Phaser.GameObjects.Zone[] = [];
   private refreshZone!: Phaser.GameObjects.Zone;
+  private stagingZones: Phaser.GameObjects.Zone[] = [];
+  private sellAllZone!: Phaser.GameObjects.Zone;
+  private closeZone!: Phaser.GameObjects.Zone;
 
   private tooltip: TooltipHandle | null = null;
+  private hoveredShopIndex = -1;
+  private hoveredStagingIndex = -1;
+  private hoveredRefresh = false;
+  private hoveredSellAll = false;
+  private hoveredClose = false;
 
   private panelX: number;
   private panelY: number;
+
+  // Merchant staging inventory
+  private stagingInventory: (ItemInstance | null)[] = Array.from({ length: MERCHANT_STAGING_SIZE }, () => null);
 
   constructor(scene: Phaser.Scene) {
     super(scene, 0, 0);
@@ -119,8 +130,8 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     this.setDepth(200);
     this.setVisible(false);
 
-    this.panelX = (scene.scale.width  - PANEL_WIDTH)  / 2;
-    this.panelY = (scene.scale.height - PANEL_HEIGHT) / 2;
+    this.panelX = this.computePanelX(scene.scale.width);
+    this.panelY = Math.floor((scene.scale.height - PANEL_HEIGHT) / 2);
 
     // Background
     this.panelBg = scene.add.graphics();
@@ -129,15 +140,15 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     // Title
     this.titleText = scene.add.text(0, 0, 'MERCHANT', {
       fontFamily: 'monospace',
-      fontSize: '14px',
-      color: COLORS.uiText,
+      fontSize: '18px',
+      color: UI_THEME.text,
       stroke: '#000000',
       strokeThickness: 2,
     });
     this.titleText.setOrigin(0.5, 0);
     this.add(this.titleText);
 
-    // Gold display
+    // Gold display (right-aligned in title row)
     this.goldText = scene.add.text(0, 0, '', {
       fontFamily: 'monospace',
       fontSize: '13px',
@@ -145,21 +156,39 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
       stroke: '#000000',
       strokeThickness: 2,
     });
-    this.goldText.setOrigin(0, 0);
+    this.goldText.setOrigin(1, 0);
+    this.goldText.setVisible(false);
     this.add(this.goldText);
 
-    // Hint
-    this.hintText = scene.add.text(0, 0, 'Right-click item to sell', {
+    this.closeText = scene.add.text(0, 0, 'X', {
       fontFamily: 'monospace',
-      fontSize: '11px',
-      color: COLORS.uiTextDim,
+      fontSize: '13px',
+      color: UI_THEME.textDim,
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5, 0.5);
+    this.add(this.closeText);
+
+    this.closeZone = scene.add.zone(0, 0, 24, 24);
+    this.closeZone.setInteractive({ useHandCursor: true });
+    this.closeZone.on('pointerdown', () => {
+      if (!this.visible) return;
+      this.toggle();
     });
-    this.hintText.setOrigin(0.5, 0);
-    this.add(this.hintText);
+    this.closeZone.on('pointerover', () => {
+      this.hoveredClose = true;
+      if (this.visible) this.updateCloseControl();
+    });
+    this.closeZone.on('pointerout', () => {
+      this.hoveredClose = false;
+      if (this.visible) this.updateCloseControl();
+    });
+    this.add(this.closeZone);
 
     this.createShopItemZones();
-    this.createInventoryZones();
     this.createRefreshZone();
+    this.createStagingZones();
+    this.createSellAllZone();
 
     on('ui:merchantToggle', this.toggle);
     on('economy:goldChanged', this.onGoldChanged);
@@ -167,7 +196,13 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     scene.scale.on('resize', this.onResize, this);
   }
 
-  // --- Shop tier mapping ---
+  // --- Panel positioning ---
+
+  private computePanelX(sceneWidth: number): number {
+    return Math.floor((sceneWidth - PANEL_WIDTH) / 2);
+  }
+
+  // --- Shop tier ---
 
   private getShopTier(): number {
     const level = getPlayer().level;
@@ -191,34 +226,19 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
       zone.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
         if (!pointer.rightButtonDown()) this.onShopItemClick(idx);
       });
-      zone.on('pointerover', () => { this.showShopTooltip(idx); });
-      zone.on('pointerout',  () => { this.hideTooltip(); });
+      zone.on('pointerover', () => {
+        this.hoveredShopIndex = idx;
+        if (this.visible) this.refresh();
+        this.showShopTooltip(idx);
+      });
+      zone.on('pointerout',  () => {
+        if (this.hoveredShopIndex === idx) this.hoveredShopIndex = -1;
+        if (this.visible) this.refresh();
+        this.hideTooltip();
+      });
 
       this.add(zone);
       this.shopItemZones.push(zone);
-    }
-  }
-
-  private createInventoryZones(): void {
-    for (let i = 0; i < INVENTORY_SIZE; i++) {
-      const { x, y } = invSlotPos(i, this.panelX, this.panelY);
-      const zone = this.scene.add.zone(
-        x + INV_SLOT / 2,
-        y + INV_SLOT / 2,
-        INV_SLOT,
-        INV_SLOT,
-      );
-      zone.setInteractive({ useHandCursor: true });
-
-      const idx = i;
-      zone.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-        if (pointer.rightButtonDown()) this.onInventoryRightClick(idx);
-      });
-      zone.on('pointerover', () => { this.showInventoryTooltip(idx); });
-      zone.on('pointerout',  () => { this.hideTooltip(); });
-
-      this.add(zone);
-      this.inventorySlotZones.push(zone);
     }
   }
 
@@ -226,7 +246,70 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     this.refreshZone = this.scene.add.zone(0, 0, 120, 20);
     this.refreshZone.setInteractive({ useHandCursor: true });
     this.refreshZone.on('pointerdown', () => { this.onRefreshClick(); });
+    this.refreshZone.on('pointerover', () => {
+      this.hoveredRefresh = true;
+      if (this.visible) this.refresh();
+    });
+    this.refreshZone.on('pointerout', () => {
+      this.hoveredRefresh = false;
+      if (this.visible) this.refresh();
+    });
     this.add(this.refreshZone);
+  }
+
+  private createStagingZones(): void {
+    for (let i = 0; i < MERCHANT_STAGING_SIZE; i++) {
+      const { x, y } = stagingSlotPos(i, this.panelX, this.panelY);
+      const zone = this.scene.add.zone(
+        x + STAGING_SLOT_SIZE / 2,
+        y + STAGING_SLOT_SIZE / 2,
+        STAGING_SLOT_SIZE,
+        STAGING_SLOT_SIZE,
+      );
+      zone.setInteractive({ useHandCursor: true });
+      const idx = i;
+      zone.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+        if (pointer.rightButtonDown()) return;
+        const item = this.stagingInventory[idx];
+        if (!item) return;
+        // Ctrl+click → quick-return to inventory
+        if ((pointer.event as MouseEvent).ctrlKey) {
+          emit('ui:inventoryQuickMove', { item, fromStagingIndex: idx });
+          return;
+        }
+        // Drag: remove from staging immediately, then start drag
+        this.stagingInventory[idx] = null;
+        this.refresh();
+        emit('ui:itemDragStart', { item, sourceIndex: idx, dragSource: 'staging' });
+      });
+      zone.on('pointerover', () => {
+        this.hoveredStagingIndex = idx;
+        if (this.visible) this.refresh();
+        this.showStagingTooltip(idx);
+      });
+      zone.on('pointerout',  () => {
+        if (this.hoveredStagingIndex === idx) this.hoveredStagingIndex = -1;
+        if (this.visible) this.refresh();
+        this.hideTooltip();
+      });
+      this.add(zone);
+      this.stagingZones.push(zone);
+    }
+  }
+
+  private createSellAllZone(): void {
+    this.sellAllZone = this.scene.add.zone(0, 0, 120, 28);
+    this.sellAllZone.setInteractive({ useHandCursor: true });
+    this.sellAllZone.on('pointerdown', () => { this.onSellAllClick(); });
+    this.sellAllZone.on('pointerover', () => {
+      this.hoveredSellAll = true;
+      if (this.visible) this.refresh();
+    });
+    this.sellAllZone.on('pointerout', () => {
+      this.hoveredSellAll = false;
+      if (this.visible) this.refresh();
+    });
+    this.add(this.sellAllZone);
   }
 
   // --- Zone repositioning on resize ---
@@ -236,11 +319,11 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
       const { x, y } = shopCardPos(i, this.panelX, this.panelY);
       this.shopItemZones[i].setPosition(x + SHOP_CARD_W / 2, y + SHOP_CARD_H / 2);
     }
-    for (let i = 0; i < this.inventorySlotZones.length; i++) {
-      const { x, y } = invSlotPos(i, this.panelX, this.panelY);
-      this.inventorySlotZones[i].setPosition(x + INV_SLOT / 2, y + INV_SLOT / 2);
+    for (let i = 0; i < this.stagingZones.length; i++) {
+      const { x, y } = stagingSlotPos(i, this.panelX, this.panelY);
+      this.stagingZones[i].setPosition(x + STAGING_SLOT_SIZE / 2, y + STAGING_SLOT_SIZE / 2);
     }
-    // refreshZone is repositioned in drawShopSection()
+    // refreshZone and sellAllZone are repositioned inside their draw calls
   }
 
   // --- Drawing ---
@@ -255,19 +338,10 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
   private drawPanelBackground(): void {
     const bg = this.panelBg;
     bg.clear();
-
-    bg.fillStyle(0x111111, 0.93);
-    bg.fillRoundedRect(this.panelX, this.panelY, PANEL_WIDTH, PANEL_HEIGHT, 8);
-
-    bg.lineStyle(2, 0x555555, 0.8);
-    bg.strokeRoundedRect(this.panelX, this.panelY, PANEL_WIDTH, PANEL_HEIGHT, 8);
-
-    // Divider between shop and inventory sections
-    bg.lineStyle(1, 0x333333, 0.7);
-    bg.beginPath();
-    bg.moveTo(this.panelX + 12, this.panelY + SEC_DIV);
-    bg.lineTo(this.panelX + PANEL_WIDTH - 12, this.panelY + SEC_DIV);
-    bg.strokePath();
+    drawPanelShell(bg, this.panelX, this.panelY, PANEL_WIDTH, PANEL_HEIGHT, 10);
+    drawSectionCard(bg, this.panelX + 12, this.panelY + 30, PANEL_WIDTH - 24, 222, false);
+    drawSectionCard(bg, this.panelX + 12, this.panelY + SEC_DIV + 8, PANEL_WIDTH - 24, PANEL_HEIGHT - (SEC_DIV + 20), true);
+    drawDivider(bg, this.panelX + 20, this.panelY + SEC_DIV, this.panelX + PANEL_WIDTH - 20, this.panelY + SEC_DIV);
   }
 
   private drawShopSection(): void {
@@ -278,35 +352,43 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     const forSaleLabel = this.scene.add.text(
       this.panelX + 14,
       this.panelY + SEC_SHOP_LBL,
-      '── For Sale ──',
-      { fontFamily: 'monospace', fontSize: '11px', color: COLORS.uiTextDim },
+      'For Sale',
+      { fontFamily: 'monospace', fontSize: '11px', color: UI_THEME.textDim },
     );
     forSaleLabel.setOrigin(0, 0);
     this.add(forSaleLabel);
     this.dynamicTexts.push(forSaleLabel);
 
-    // Refresh button text
-    const refreshCost    = getRefreshCost();
+    // Refresh button
+    const refreshCost = getRefreshCost();
     const canAffordRefresh = player.gold >= refreshCost;
-    const refreshLabel   = this.scene.add.text(
-      this.panelX + PANEL_WIDTH - 14,
-      this.panelY + SEC_SHOP_LBL,
-      `[Refresh ${refreshCost}g]`,
+    const refreshButtonW = 142;
+    const refreshButtonH = 20;
+    const refreshButtonX = this.panelX + PANEL_WIDTH - 18 - refreshButtonW;
+    const refreshButtonY = this.panelY + SEC_SHOP_LBL - 1;
+    const refreshBtnGfx = this.scene.add.graphics();
+    const refreshState: UiButtonState = !canAffordRefresh ? 'disabled' : this.hoveredRefresh ? 'hover' : 'default';
+    drawPillButton(refreshBtnGfx, refreshButtonX, refreshButtonY, refreshButtonW, refreshButtonH, refreshState, { fill: 0x14532d, border: 0x22c55e });
+    this.add(refreshBtnGfx);
+    this.dynamicGfx.push(refreshBtnGfx);
+
+    const refreshLabel = this.scene.add.text(
+      refreshButtonX + refreshButtonW / 2,
+      refreshButtonY + refreshButtonH / 2 + 1,
+      `Refresh (${refreshCost}g)`,
       {
         fontFamily: 'monospace',
-        fontSize: '11px',
-        color: canAffordRefresh ? COLORS.gold : COLORS.uiTextDim,
+        fontSize: '10px',
+        color: canAffordRefresh ? UI_THEME.text : UI_THEME.textMuted,
       },
-    );
-    refreshLabel.setOrigin(1, 0);
+    ).setOrigin(0.5, 0.5);
     this.add(refreshLabel);
     this.dynamicTexts.push(refreshLabel);
 
-    // Reposition refresh interactive zone to match the text
-    this.refreshZone.setSize(refreshLabel.width + 8, refreshLabel.height + 4);
+    this.refreshZone.setSize(refreshButtonW, refreshButtonH);
     this.refreshZone.setPosition(
-      this.panelX + PANEL_WIDTH - 14 - refreshLabel.width / 2,
-      this.panelY + SEC_SHOP_LBL + refreshLabel.height / 2,
+      refreshButtonX + refreshButtonW / 2,
+      refreshButtonY + refreshButtonH / 2,
     );
 
     // Shop item cards
@@ -319,61 +401,48 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
       this.dynamicGfx.push(gfx);
 
       if (item) {
-        const price     = getShopItemPrice(i);
+        const price = getShopItemPrice(i);
         const canAfford = player.gold >= price;
+        const isHovered = this.hoveredShopIndex === i;
 
-        gfx.fillStyle(0x1e1e1e, 0.9);
-        gfx.fillRoundedRect(x, y, SHOP_CARD_W, SHOP_CARD_H, 4);
+        gfx.fillStyle(isHovered ? 0x25334b : 0x1e293b, 0.94);
+        gfx.fillRoundedRect(x, y, SHOP_CARD_W, SHOP_CARD_H, 6);
         gfx.lineStyle(2, RARITY_BORDER_COLORS[item.rarity], 1);
-        gfx.strokeRoundedRect(x, y, SHOP_CARD_W, SHOP_CARD_H, 4);
+        gfx.strokeRoundedRect(x, y, SHOP_CARD_W, SHOP_CARD_H, 6);
 
-        // Item name
-        const nameText = this.scene.add.text(
-          x + 6, y + 6,
-          item.name.substring(0, 14),
-          {
-            fontFamily: 'monospace',
-            fontSize: '12px',
-            color: RARITY_COLORS[item.rarity],
-            stroke: '#000000',
-            strokeThickness: 1,
-          },
-        );
+        const nameText = this.scene.add.text(x + 10, y + 8, item.name.substring(0, 18), {
+          fontFamily: 'monospace',
+          fontSize: '12px',
+          color: RARITY_COLORS[item.rarity],
+          stroke: '#000000',
+          strokeThickness: 1,
+        });
         this.add(nameText);
         this.dynamicTexts.push(nameText);
 
-        // Slot label
         const slotText = this.scene.add.text(
-          x + 6, y + 26,
-          item.slot.charAt(0).toUpperCase() + item.slot.slice(1),
+          x + 10, y + 34,
+          `${item.slot.charAt(0).toUpperCase() + item.slot.slice(1)}  |  iLvl ${item.itemLevel}  T${item.tier}`,
           { fontFamily: 'monospace', fontSize: '10px', color: COLORS.uiTextDim },
         );
         this.add(slotText);
         this.dynamicTexts.push(slotText);
 
-        // Price
-        const priceText = this.scene.add.text(
-          x + 6, y + SHOP_CARD_H - 18,
-          `${price}g`,
-          {
-            fontFamily: 'monospace',
-            fontSize: '11px',
-            color: canAfford ? COLORS.gold : '#f87171',
-          },
-        );
+        const priceText = this.scene.add.text(x + SHOP_CARD_W - 10, y + SHOP_CARD_H - 18, `${price}g`, {
+          fontFamily: 'monospace',
+          fontSize: '12px',
+          color: canAfford ? COLORS.gold : '#f87171',
+        }).setOrigin(1, 0);
         this.add(priceText);
         this.dynamicTexts.push(priceText);
       } else {
-        // Empty / sold slot
         gfx.fillStyle(0x141414, 0.7);
-        gfx.fillRoundedRect(x, y, SHOP_CARD_W, SHOP_CARD_H, 4);
+        gfx.fillRoundedRect(x, y, SHOP_CARD_W, SHOP_CARD_H, 6);
         gfx.lineStyle(1, 0x333333, 0.5);
-        gfx.strokeRoundedRect(x, y, SHOP_CARD_W, SHOP_CARD_H, 4);
+        gfx.strokeRoundedRect(x, y, SHOP_CARD_W, SHOP_CARD_H, 6);
 
         const soldText = this.scene.add.text(
-          x + SHOP_CARD_W / 2,
-          y + SHOP_CARD_H / 2,
-          'SOLD',
+          x + SHOP_CARD_W / 2, y + SHOP_CARD_H / 2, 'SOLD',
           { fontFamily: 'monospace', fontSize: '12px', color: '#444444' },
         );
         soldText.setOrigin(0.5, 0.5);
@@ -383,43 +452,41 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     }
   }
 
-  private drawInventorySection(): void {
-    const player = getPlayer();
-
+  private drawStagingSection(): void {
     // Section label
-    const invLabel = this.scene.add.text(
-      this.panelX + PANEL_WIDTH / 2,
-      this.panelY + SEC_INV_LBL,
-      '── Your Items ──',
-      { fontFamily: 'monospace', fontSize: '11px', color: COLORS.uiTextDim },
+    const sellLabel = this.scene.add.text(
+      this.panelX + 14, this.panelY + SEC_SELL_LBL,
+      'Staging',
+      { fontFamily: 'monospace', fontSize: '11px', color: UI_THEME.textDim },
     );
-    invLabel.setOrigin(0.5, 0);
-    this.add(invLabel);
-    this.dynamicTexts.push(invLabel);
+    sellLabel.setOrigin(0, 0);
+    this.add(sellLabel);
+    this.dynamicTexts.push(sellLabel);
 
-    // Inventory grid
-    for (let i = 0; i < INVENTORY_SIZE; i++) {
-      const { x, y } = invSlotPos(i, this.panelX, this.panelY);
-      const item = player.inventory[i] as ItemInstance | undefined;
+    // Draw 6 staging slots (same style as inventory)
+    for (let i = 0; i < MERCHANT_STAGING_SIZE; i++) {
+      const { x, y } = stagingSlotPos(i, this.panelX, this.panelY);
+      const item = this.stagingInventory[i];
+      const isHovered = this.hoveredStagingIndex === i;
 
       const gfx = this.scene.add.graphics();
       this.add(gfx);
       this.dynamicGfx.push(gfx);
 
-      gfx.fillStyle(0x1a1a1a, 0.8);
-      gfx.fillRoundedRect(x, y, INV_SLOT, INV_SLOT, 2);
+      gfx.fillStyle(isHovered ? 0x243246 : 0x1a2333, 0.86);
+      gfx.fillRoundedRect(x, y, STAGING_SLOT_SIZE, STAGING_SLOT_SIZE, 4);
 
       if (item) {
         gfx.lineStyle(2, RARITY_BORDER_COLORS[item.rarity], 1);
-        gfx.strokeRoundedRect(x, y, INV_SLOT, INV_SLOT, 2);
+        gfx.strokeRoundedRect(x, y, STAGING_SLOT_SIZE, STAGING_SLOT_SIZE, 4);
 
         const nameText = this.scene.add.text(
-          x + INV_SLOT / 2,
-          y + INV_SLOT / 2,
-          item.name.substring(0, 4),
+          x + STAGING_SLOT_SIZE / 2,
+          y + STAGING_SLOT_SIZE / 2,
+          item.name.substring(0, 5),
           {
             fontFamily: 'monospace',
-            fontSize: '10px',
+            fontSize: '11px',
             color: RARITY_COLORS[item.rarity],
             stroke: '#000000',
             strokeThickness: 1,
@@ -430,9 +497,48 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
         this.dynamicTexts.push(nameText);
       } else {
         gfx.lineStyle(1, 0x2a2a2a, 0.6);
-        gfx.strokeRoundedRect(x, y, INV_SLOT, INV_SLOT, 2);
+        gfx.strokeRoundedRect(x, y, STAGING_SLOT_SIZE, STAGING_SLOT_SIZE, 4);
       }
     }
+
+    // SELL ALL button
+    const hasItems = this.stagingInventory.some(Boolean);
+    const totalValue = this.stagingInventory.reduce((sum, item) => {
+      if (!item) return sum;
+      return sum + Math.floor(getItemValue(item) * SELL_PRICE_RATIO);
+    }, 0);
+
+    const btnLabel = hasItems ? `[ SELL ALL: ${totalValue}g ]` : '[ SELL ALL ]';
+    const btnColor = hasItems ? COLORS.gold : '#555555';
+
+    const sellBtnW = 214;
+    const sellBtnH = 26;
+    const sellBtnX = this.panelX + PANEL_WIDTH / 2 - sellBtnW / 2;
+    const sellBtnY = this.panelY + SEC_SELL_BTN - 2;
+    const sellBtnGfx = this.scene.add.graphics();
+    const sellBtnState: UiButtonState = !hasItems ? 'disabled' : this.hoveredSellAll ? 'hover' : 'default';
+    drawPillButton(sellBtnGfx, sellBtnX, sellBtnY, sellBtnW, sellBtnH, sellBtnState, { fill: 0x854d0e, border: 0xf59e0b });
+    this.add(sellBtnGfx);
+    this.dynamicGfx.push(sellBtnGfx);
+
+    const sellBtnText = this.scene.add.text(
+      this.panelX + PANEL_WIDTH / 2,
+      sellBtnY + sellBtnH / 2 + 1,
+      btnLabel,
+      {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color: hasItems ? btnColor : UI_THEME.textMuted,
+      },
+    ).setOrigin(0.5, 0.5);
+    this.add(sellBtnText);
+    this.dynamicTexts.push(sellBtnText);
+
+    this.sellAllZone.setPosition(
+      this.panelX + PANEL_WIDTH / 2,
+      sellBtnY + sellBtnH / 2,
+    );
+    this.sellAllZone.setSize(sellBtnW, sellBtnH);
   }
 
   // --- Interaction handlers ---
@@ -440,17 +546,8 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
   private onShopItemClick(index: number): void {
     const player = getPlayer();
     const price = getShopItemPrice(index);
-
-    if (price <= 0) return; // empty slot
-
-    if (player.inventory.length >= INVENTORY_SIZE) {
-      this.hintText.setText('Inventory full!');
-      this.scene.time.delayedCall(2000, () => {
-        if (this.visible) this.hintText.setText('Right-click item to sell');
-      });
-      return;
-    }
-
+    if (price <= 0) return;
+    if (isInventoryFull()) return;
     if (player.gold < price) return;
 
     const item = purchaseShopItem(index);
@@ -460,19 +557,33 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     }
   }
 
-  private onInventoryRightClick(index: number): void {
-    const player = getPlayer();
-    const item = player.inventory[index];
-    if (!item) return;
-
-    sellItem(item.id);
-    this.hideTooltip();
-    this.refresh();
-  }
-
   private onRefreshClick(): void {
     const success = refreshShop(this.getShopTier(), generateShopItem);
     if (success) this.refresh();
+  }
+
+  private onSellAllClick(): void {
+    const hasItems = this.stagingInventory.some(Boolean);
+    if (!hasItems) return;
+
+    const player = getPlayer();
+    let totalGold = 0;
+
+    for (const item of this.stagingInventory) {
+      if (!item) continue;
+      const sellPrice = Math.floor(getItemValue(item) * SELL_PRICE_RATIO);
+      player.gold += sellPrice;
+      player.totalGoldEarned += sellPrice;
+      totalGold += sellPrice;
+      emit('item:sold', { item, gold: sellPrice });
+    }
+
+    if (totalGold > 0) {
+      emit('economy:goldChanged', { amount: totalGold, total: player.gold });
+    }
+
+    this.stagingInventory.fill(null);
+    this.refresh();
   }
 
   // --- Tooltips ---
@@ -481,21 +592,20 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     const item = getState().shopItems[index] as ItemInstance | undefined;
     if (!item) return;
 
-    const price     = getShopItemPrice(index);
+    const price = getShopItemPrice(index);
     const canAfford = getPlayer().gold >= price;
-    const { x, y }  = shopCardPos(index, this.panelX, this.panelY);
+    const { x, y } = shopCardPos(index, this.panelX, this.panelY);
 
     this.showItemTooltip(item, x, y, SHOP_CARD_W, `Price: ${price}g`, canAfford ? COLORS.gold : '#f87171');
   }
 
-  private showInventoryTooltip(index: number): void {
-    const item = getPlayer().inventory[index] as ItemInstance | undefined;
+  private showStagingTooltip(index: number): void {
+    const item = this.stagingInventory[index];
     if (!item) return;
 
     const sellPrice = Math.floor(getItemValue(item) * SELL_PRICE_RATIO);
-    const { x, y }  = invSlotPos(index, this.panelX, this.panelY);
-
-    this.showItemTooltip(item, x, y, INV_SLOT, `Sell: ${sellPrice}g`, COLORS.gold);
+    const { x, y } = stagingSlotPos(index, this.panelX, this.panelY);
+    this.showItemTooltip(item, x, y, STAGING_SLOT_SIZE, `Sell: ${sellPrice}g`, COLORS.gold);
   }
 
   private showItemTooltip(
@@ -515,7 +625,7 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     const rarityLabel = item.rarity.charAt(0).toUpperCase() + item.rarity.slice(1);
     lines.push({ text: `${rarityLabel} ${item.slot}`, color: COLORS.uiTextDim, size: 11 });
     lines.push({ text: `iLvl ${item.itemLevel}  Tier ${item.tier}`, color: COLORS.uiTextDim, size: 10 });
-    lines.push({ text: '──────────────────', color: COLORS.uiTextDim, size: 8 });
+    lines.push({ text: '------------------', color: COLORS.uiTextDim, size: 8 });
 
     const sortedAffixes = [...item.affixes].sort((a, b) => (b.isPrefix ? 1 : 0) - (a.isPrefix ? 1 : 0));
     for (const affix of sortedAffixes) {
@@ -527,11 +637,11 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     }
 
     if (item.legendaryEffect) {
-      lines.push({ text: '──────────────────', color: COLORS.uiTextDim, size: 8 });
+      lines.push({ text: '------------------', color: COLORS.uiTextDim, size: 8 });
       lines.push({ text: item.legendaryEffect, color: RARITY_COLORS.legendary, size: 11 });
     }
 
-    lines.push({ text: '──────────────────', color: COLORS.uiTextDim, size: 8 });
+    lines.push({ text: '------------------', color: COLORS.uiTextDim, size: 8 });
     lines.push({ text: priceLabel, color: priceColor, size: 12 });
 
     const container = this.scene.add.container(0, 0);
@@ -541,7 +651,7 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     const bg = this.scene.add.graphics();
     container.add(bg);
 
-    let lineY   = 8;
+    let lineY = 8;
     let maxWidth = 0;
 
     for (const line of lines) {
@@ -563,14 +673,11 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     bg.lineStyle(1, 0x555555, 0.8);
     bg.strokeRoundedRect(0, 0, tooltipWidth, tooltipHeight, 4);
 
-    // Try left side first; fall back to right side if not enough room
     const sceneW = this.scene.scale.width;
     const sceneH = this.scene.scale.height;
 
     let finalX = slotX - tooltipWidth - TOOLTIP_MARGIN;
-    if (finalX < 8) {
-      finalX = slotX + slotW + TOOLTIP_MARGIN;
-    }
+    if (finalX < 8) finalX = slotX + slotW + TOOLTIP_MARGIN;
     finalX = Math.min(finalX, sceneW - tooltipWidth - 8);
 
     let finalY = slotY;
@@ -587,32 +694,88 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
     }
   }
 
+  // --- Public API (called by UIScene during drag) ---
+
+  /** Returns the staging slot index under the given screen point, or null if no match */
+  getStagingSlotAtPoint(px: number, py: number): number | null {
+    if (!this.visible) return null;
+    for (let i = 0; i < MERCHANT_STAGING_SIZE; i++) {
+      const { x, y } = stagingSlotPos(i, this.panelX, this.panelY);
+      if (px >= x && px <= x + STAGING_SLOT_SIZE && py >= y && py <= y + STAGING_SLOT_SIZE) {
+        return i;
+      }
+    }
+    return null;
+  }
+
+  /** Move an item into a staging slot. If slot is occupied the displaced item returns to inventory. */
+  acceptStagingDrop(item: ItemInstance, slotIndex: number): void {
+    const displaced = this.stagingInventory[slotIndex];
+    if (displaced) {
+      addToInventory(displaced);
+      emit('player:statsChanged');
+    }
+    this.stagingInventory[slotIndex] = item;
+    this.refresh();
+  }
+
+  /** First staging slot with no item, or null if all occupied */
+  getFirstEmptyStagingSlot(): number | null {
+    for (let i = 0; i < MERCHANT_STAGING_SIZE; i++) {
+      if (!this.stagingInventory[i]) return i;
+    }
+    return null;
+  }
+
+  /** Remove item from staging without refreshing (caller must refresh) */
+  removeFromStaging(slotIndex: number): void {
+    this.stagingInventory[slotIndex] = null;
+  }
+
+  /** Restore an item to staging (called on drag cancel) */
+  restoreToStaging(slotIndex: number, item: ItemInstance): void {
+    this.stagingInventory[slotIndex] = item;
+    this.refresh();
+  }
+
+  /** Remove all staged items and return them (called when merchant closes) */
+  drainStaging(): ItemInstance[] {
+    const items = this.stagingInventory.filter((item): item is ItemInstance => item !== null);
+    this.stagingInventory.fill(null);
+    return items;
+  }
+
   // --- Public API ---
 
   refresh(): void {
     this.clearDynamic();
     this.drawPanelBackground();
     this.drawShopSection();
-    this.drawInventorySection();
+    this.drawStagingSection();
     this.updateGoldDisplay();
+    this.updateCloseControl();
 
-    this.titleText.setPosition(
-      this.panelX + PANEL_WIDTH / 2,
-      this.panelY + SEC_TITLE,
-    );
-    this.hintText.setPosition(
-      this.panelX + PANEL_WIDTH / 2,
-      this.panelY + SEC_HINT,
-    );
-    // Don't overwrite a "Inventory full!" message that's still showing
-    if (this.hintText.text !== 'Inventory full!') {
-      this.hintText.setText('Right-click item to sell');
-    }
+    this.titleText.setPosition(this.panelX + PANEL_WIDTH / 2, this.panelY + SEC_TITLE);
   }
 
   private updateGoldDisplay(): void {
-    this.goldText.setText(`Gold: ${getPlayer().gold}`);
-    this.goldText.setPosition(this.panelX + 14, this.panelY + SEC_GOLD);
+    // Intentionally hidden in merchant panel; character panel already shows gold.
+    this.goldText.setText('');
+  }
+
+  private updateCloseControl(): void {
+    const x = this.panelX + PANEL_WIDTH - 18;
+    const y = this.panelY + SEC_TITLE + 9;
+    this.closeText.setPosition(x, y);
+    this.closeText.setColor(this.hoveredClose ? '#fca5a5' : UI_THEME.textDim);
+    this.closeZone.setPosition(x, y);
+  }
+
+  isPointOverPanel(px: number, py: number): boolean {
+    return (
+      px >= this.panelX && px <= this.panelX + PANEL_WIDTH &&
+      py >= this.panelY && py <= this.panelY + PANEL_HEIGHT
+    );
   }
 
   toggle = (): void => {
@@ -635,9 +798,10 @@ export class MerchantPanel extends Phaser.GameObjects.Container {
   };
 
   private onResize = (gameSize: Phaser.Structs.Size): void => {
-    this.panelX = (gameSize.width  - PANEL_WIDTH)  / 2;
-    this.panelY = (gameSize.height - PANEL_HEIGHT) / 2;
+    this.panelX = this.computePanelX(gameSize.width);
+    this.panelY = Math.floor((gameSize.height - PANEL_HEIGHT) / 2);
     this.repositionZones();
+    this.updateCloseControl();
     if (this.visible) this.refresh();
   };
 

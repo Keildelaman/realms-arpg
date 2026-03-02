@@ -1,22 +1,20 @@
 // ============================================================================
-// SkillBar — 4 skill slots at bottom-center of screen
+// SkillBar - 4 skill slots at bottom-center of screen
 // ============================================================================
 
 import Phaser from 'phaser';
 import { getPlayer, getState } from '@/core/game-state';
-import {
-  GAME_WIDTH,
-  GAME_HEIGHT,
-  COLORS,
-} from '@/data/constants';
+import { GAME_WIDTH, GAME_HEIGHT, MAX_SKILL_LEVEL } from '@/data/constants';
 import { SKILLS } from '@/data/skills.data';
+import { checkUnlockCondition } from '@/systems/skills';
+import { UI_THEME, drawSectionCard } from '@/ui/ui-theme';
 
-// --- Layout constants (local to this component) ---
-const SKILL_ICON_SIZE = 60;
-const SKILL_BAR_PADDING = 8;
-const SLOT_KEY_LABELS = ['LMB', 'RMB', '1', '2', '3', '4'];
+const SKILL_ICON_SIZE = 58;
+const SKILL_BAR_PADDING = 10;
+const SLOT_KEY_LABELS = ['LMB', 'RMB', 'Q', 'E'];
 
 interface SkillSlotDisplay {
+  zone: Phaser.GameObjects.Zone;
   bg: Phaser.GameObjects.Graphics;
   cooldownOverlay: Phaser.GameObjects.Graphics;
   keyText: Phaser.GameObjects.Text;
@@ -28,9 +26,15 @@ interface SkillSlotDisplay {
 }
 
 export class SkillBar extends Phaser.GameObjects.Container {
+  private plate: Phaser.GameObjects.Graphics;
   private slots: SkillSlotDisplay[] = [];
   private totalWidth: number;
-  private hoveredSlot: number = -1;
+  private hoveredSlot = -1;
+
+  // SP indicator + passive slots
+  private spIndicator: Phaser.GameObjects.Graphics;
+  private passivePlate: Phaser.GameObjects.Graphics;
+  private passiveTexts: Phaser.GameObjects.Text[] = [];
 
   constructor(scene: Phaser.Scene) {
     super(scene, 0, 0);
@@ -38,15 +42,35 @@ export class SkillBar extends Phaser.GameObjects.Container {
     this.setScrollFactor(0);
     this.setDepth(100);
 
-    // Calculate total bar width: 6 icons + 5 gaps
-    this.totalWidth = SKILL_ICON_SIZE * 6 + SKILL_BAR_PADDING * 5;
+    this.totalWidth = SKILL_ICON_SIZE * 4 + SKILL_BAR_PADDING * 3;
 
-    // Create 6 skill slot displays
-    for (let i = 0; i < 6; i++) {
+    this.plate = scene.add.graphics();
+    this.add(this.plate);
+
+    for (let i = 0; i < 4; i++) {
       this.createSlot(i);
     }
 
-    // Handle resize
+    // SP indicator diamond
+    this.spIndicator = scene.add.graphics();
+    this.add(this.spIndicator);
+
+    // Passive slot plate
+    this.passivePlate = scene.add.graphics();
+    this.add(this.passivePlate);
+
+    for (let i = 0; i < 2; i++) {
+      const txt = scene.add.text(0, 0, '', {
+        fontFamily: 'monospace',
+        fontSize: '9px',
+        color: UI_THEME.textDim,
+        stroke: '#000000',
+        strokeThickness: 1,
+      }).setOrigin(0.5, 0.5);
+      this.add(txt);
+      this.passiveTexts.push(txt);
+    }
+
     scene.scale.on('resize', this.onResize, this);
   }
 
@@ -58,80 +82,51 @@ export class SkillBar extends Phaser.GameObjects.Container {
 
   private getSlotY(): number {
     const screenHeight = this.scene.scale.height || GAME_HEIGHT;
-    return screenHeight - 80;
+    return screenHeight - 82;
   }
 
   private createSlot(index: number): void {
     const x = this.getSlotX(index);
     const y = this.getSlotY();
 
-    // Background
     const bg = this.scene.add.graphics();
     this.add(bg);
 
-    // Cooldown overlay
     const cooldownOverlay = this.scene.add.graphics();
     this.add(cooldownOverlay);
 
-    // Active border (for toggle skills)
     const activeBorder = this.scene.add.graphics();
     this.add(activeBorder);
 
-    // Key hint (LMB, RMB, 1-4)
-    const keyText = this.scene.add.text(
-      x + 4,
-      y + 2,
-      SLOT_KEY_LABELS[index],
-      {
-        fontFamily: 'monospace',
-        fontSize: '12px',
-        color: '#ffffff',
-        stroke: '#000000',
-        strokeThickness: 2,
-      }
-    );
+    const keyText = this.scene.add.text(x + 4, y + 2, SLOT_KEY_LABELS[index], {
+      fontFamily: 'monospace',
+      fontSize: '10px',
+      color: UI_THEME.text,
+      stroke: '#000000',
+      strokeThickness: 2,
+    });
     this.add(keyText);
 
-    // Skill name abbreviation
-    const nameText = this.scene.add.text(
-      x + SKILL_ICON_SIZE / 2,
-      y + SKILL_ICON_SIZE - 10,
-      '',
-      {
-        fontFamily: 'monospace',
-        fontSize: '10px',
-        color: '#cccccc',
-        stroke: '#000000',
-        strokeThickness: 2,
-      }
-    );
-    nameText.setOrigin(0.5, 0.5);
+    const nameText = this.scene.add.text(x + SKILL_ICON_SIZE / 2, y + SKILL_ICON_SIZE - 10, '', {
+      fontFamily: 'monospace',
+      fontSize: '9px',
+      color: '#cbd5e1',
+      stroke: '#000000',
+      strokeThickness: 2,
+    }).setOrigin(0.5, 0.5);
     this.add(nameText);
 
-    // Cooldown remaining text
-    const cooldownText = this.scene.add.text(
-      x + SKILL_ICON_SIZE / 2,
-      y + SKILL_ICON_SIZE / 2,
-      '',
-      {
-        fontFamily: 'monospace',
-        fontSize: '14px',
-        color: '#ffffff',
-        stroke: '#000000',
-        strokeThickness: 3,
-      }
-    );
-    cooldownText.setOrigin(0.5, 0.5);
+    const cooldownText = this.scene.add.text(x + SKILL_ICON_SIZE / 2, y + SKILL_ICON_SIZE / 2 - 3, '', {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 3,
+    }).setOrigin(0.5, 0.5);
     this.add(cooldownText);
 
-    // Set up hover detection zone
-    const zone = this.scene.add.zone(
-      x + SKILL_ICON_SIZE / 2,
-      y + SKILL_ICON_SIZE / 2,
-      SKILL_ICON_SIZE,
-      SKILL_ICON_SIZE
-    );
-    zone.setInteractive();
+    const zone = this.scene.add.zone(x + SKILL_ICON_SIZE / 2, y + SKILL_ICON_SIZE / 2, SKILL_ICON_SIZE, SKILL_ICON_SIZE);
+    zone.setInteractive({ useHandCursor: true });
     zone.setScrollFactor(0);
     zone.setDepth(101);
     const slotIndex = index;
@@ -140,6 +135,7 @@ export class SkillBar extends Phaser.GameObjects.Container {
     this.add(zone);
 
     this.slots.push({
+      zone,
       bg,
       cooldownOverlay,
       keyText,
@@ -152,30 +148,30 @@ export class SkillBar extends Phaser.GameObjects.Container {
   }
 
   private onResize = (): void => {
-    // Positions will be recalculated in update()
+    // Positions are recomputed in update.
   };
 
   update(_dt: number): void {
     const player = getPlayer();
     const state = getState();
 
-    for (let i = 0; i < 6; i++) {
+    this.drawBarPlate();
+
+    for (let i = 0; i < 4; i++) {
       const slot = this.slots[i];
       const skillId = player.activeSkills[i];
       const x = this.getSlotX(i);
       const y = this.getSlotY();
 
-      // Update position of key and cooldown text
+      slot.zone.setPosition(x + SKILL_ICON_SIZE / 2, y + SKILL_ICON_SIZE / 2);
       slot.keyText.setPosition(x + 4, y + 2);
       slot.nameText.setPosition(x + SKILL_ICON_SIZE / 2, y + SKILL_ICON_SIZE - 10);
-      slot.cooldownText.setPosition(x + SKILL_ICON_SIZE / 2, y + SKILL_ICON_SIZE / 2 - 4);
+      slot.cooldownText.setPosition(x + SKILL_ICON_SIZE / 2, y + SKILL_ICON_SIZE / 2 - 3);
 
-      // Clear graphics
       slot.bg.clear();
       slot.cooldownOverlay.clear();
       slot.activeBorder.clear();
 
-      // Clean up tooltip if no longer hovering this slot or skill changed
       const isHovered = this.hoveredSlot === i;
       if (slot.tooltipContainer && (!isHovered || slot.tooltipSkillId !== skillId)) {
         slot.tooltipContainer.destroy();
@@ -184,14 +180,12 @@ export class SkillBar extends Phaser.GameObjects.Container {
       }
 
       if (!skillId) {
-        // Empty slot
-        slot.bg.fillStyle(0x1a1a1a, 0.7);
-        slot.bg.fillRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 4);
-        slot.bg.lineStyle(1, 0x333333, 0.4);
-        slot.bg.strokeRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 4);
-        // Show dash in center
-        slot.nameText.setText('\u2014');
-        slot.nameText.setColor('#555555');
+        slot.bg.fillStyle(0x1a2333, 0.88);
+        slot.bg.fillRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 6);
+        slot.bg.lineStyle(1, isHovered ? 0x64748b : 0x334155, 0.9);
+        slot.bg.strokeRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 6);
+        slot.nameText.setText('-');
+        slot.nameText.setColor('#64748b');
         slot.cooldownText.setText('');
         continue;
       }
@@ -200,105 +194,167 @@ export class SkillBar extends Phaser.GameObjects.Container {
       if (!def) continue;
 
       const skillState = state.skillStates[skillId];
-      const isOnCooldown = skillState && skillState.cooldownRemaining > 0;
-      const isActive = skillState && skillState.isActive;
-
-      // Skill name abbreviation
-      slot.nameText.setText(def.name.substring(0, 3).toUpperCase());
-      slot.nameText.setColor('#cccccc');
-
-      // Draw skill icon background with skill color
+      const isOnCooldown = !!(skillState && skillState.cooldownRemaining > 0);
+      const isActive = !!(skillState && skillState.isActive);
       const skillColor = Phaser.Display.Color.HexStringToColor(def.color).color;
 
+      slot.nameText.setText(def.name.substring(0, 4).toUpperCase());
+      slot.nameText.setColor('#e2e8f0');
+
       if (isOnCooldown) {
-        // Greyed out when on cooldown
-        slot.bg.fillStyle(0x333333, 0.8);
-        slot.bg.fillRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 4);
+        slot.bg.fillStyle(0x334155, 0.9);
+        slot.bg.fillRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 6);
+        slot.bg.fillStyle(skillColor, 0.25);
+        slot.bg.fillRoundedRect(x + 3, y + 3, SKILL_ICON_SIZE - 6, SKILL_ICON_SIZE - 6, 5);
 
-        // Draw the skill color at reduced opacity underneath
-        slot.bg.fillStyle(skillColor, 0.2);
-        slot.bg.fillRoundedRect(x + 2, y + 2, SKILL_ICON_SIZE - 4, SKILL_ICON_SIZE - 4, 3);
-
-        // Cooldown overlay: darken from top based on remaining ratio
-        const cooldownDuration = skillState.cooldownRemaining;
+        const cooldownRemaining = skillState!.cooldownRemaining;
         const level = player.skillLevels[skillId] ?? 1;
         const levelData = def.levels[Math.min(level - 1, def.levels.length - 1)];
         const totalCD = levelData ? levelData.cooldown : 1;
-        const cdRatio = Math.min(1, cooldownDuration / totalCD);
-
-        // Vertical sweep overlay
+        const cdRatio = Math.min(1, cooldownRemaining / Math.max(0.001, totalCD));
         const overlayHeight = SKILL_ICON_SIZE * cdRatio;
-        slot.cooldownOverlay.fillStyle(0x000000, 0.5);
-        slot.cooldownOverlay.fillRoundedRect(
-          x, y,
-          SKILL_ICON_SIZE, overlayHeight,
-          { tl: 4, tr: 4, bl: 0, br: 0 }
-        );
 
-        // Show remaining time text
-        slot.cooldownText.setText(cooldownDuration.toFixed(1));
-        slot.cooldownText.setVisible(true);
+        slot.cooldownOverlay.fillStyle(0x000000, 0.48);
+        slot.cooldownOverlay.fillRoundedRect(x, y, SKILL_ICON_SIZE, overlayHeight, { tl: 6, tr: 6, bl: 0, br: 0 });
+        slot.cooldownText.setText(cooldownRemaining.toFixed(1));
       } else {
-        // Ready — show skill color
-        slot.bg.fillStyle(skillColor, 0.6);
-        slot.bg.fillRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 4);
-
-        // Inner lighter area
+        slot.bg.fillStyle(skillColor, 0.62);
+        slot.bg.fillRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 6);
         slot.bg.fillStyle(skillColor, 0.3);
-        slot.bg.fillRoundedRect(x + 3, y + 3, SKILL_ICON_SIZE - 6, SKILL_ICON_SIZE - 6, 3);
-
+        slot.bg.fillRoundedRect(x + 3, y + 3, SKILL_ICON_SIZE - 6, SKILL_ICON_SIZE - 6, 5);
         slot.cooldownText.setText('');
-        slot.cooldownText.setVisible(false);
       }
 
-      // Active border for toggle/channel skills
+      slot.bg.lineStyle(1, isHovered ? 0xbfdbfe : 0x64748b, isHovered ? 0.95 : 0.75);
+      slot.bg.strokeRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 6);
+
       if (isActive) {
-        const pulse = 0.6 + Math.sin(this.scene.time.now / 150) * 0.4;
-        slot.activeBorder.lineStyle(3, 0xffffff, pulse);
-        slot.activeBorder.strokeRoundedRect(
-          x - 2, y - 2,
-          SKILL_ICON_SIZE + 4, SKILL_ICON_SIZE + 4,
-          5
-        );
+        const pulse = 0.6 + Math.sin(this.scene.time.now / 150) * 0.35;
+        slot.activeBorder.lineStyle(2, 0xffffff, pulse);
+        slot.activeBorder.strokeRoundedRect(x - 2, y - 2, SKILL_ICON_SIZE + 4, SKILL_ICON_SIZE + 4, 7);
       }
 
-      // Border
-      slot.bg.lineStyle(1, 0x666666, 0.6);
-      slot.bg.strokeRoundedRect(x, y, SKILL_ICON_SIZE, SKILL_ICON_SIZE, 4);
-
-      // Hover tooltip — only create when first hovering (not every frame)
       if (isHovered && !slot.tooltipContainer) {
         const level = player.skillLevels[skillId] ?? 1;
         const levelData = def.levels[Math.min(level - 1, def.levels.length - 1)];
         const energyCost = levelData ? levelData.energyCost : 0;
         const cooldown = levelData ? levelData.cooldown : 0;
-
         const tooltipText = `${def.name}  EN:${energyCost}  CD:${cooldown.toFixed(1)}s`;
-        const container = this.scene.add.container(x, y - 28);
+        const container = this.scene.add.container(x, y - 30);
         container.setScrollFactor(0);
         container.setDepth(110);
 
-        const bg = this.scene.add.graphics();
-        const text = this.scene.add.text(6, 3, tooltipText, {
+        const tooltipBg = this.scene.add.graphics();
+        const tooltipLabel = this.scene.add.text(6, 3, tooltipText, {
           fontFamily: 'monospace',
-          fontSize: '11px',
-          color: '#ffffff',
+          fontSize: '10px',
+          color: UI_THEME.text,
           stroke: '#000000',
           strokeThickness: 2,
         });
-        const w = text.width + 12;
-        const h = text.height + 6;
-        bg.fillStyle(0x111111, 0.92);
-        bg.fillRoundedRect(0, 0, w, h, 3);
-        bg.lineStyle(1, 0x555555, 0.6);
-        bg.strokeRoundedRect(0, 0, w, h, 3);
-        container.add(bg);
-        container.add(text);
+        const w = tooltipLabel.width + 12;
+        const h = tooltipLabel.height + 6;
+        tooltipBg.fillStyle(0x0f172a, 0.95);
+        tooltipBg.fillRoundedRect(0, 0, w, h, 4);
+        tooltipBg.lineStyle(1, 0x334155, 0.9);
+        tooltipBg.strokeRoundedRect(0, 0, w, h, 4);
+        container.add(tooltipBg);
+        container.add(tooltipLabel);
 
         this.add(container);
         slot.tooltipContainer = container;
         slot.tooltipSkillId = skillId;
       }
     }
+
+    // --- SP indicator diamond ---
+    this.spIndicator.clear();
+    if (player.skillPoints > 0) {
+      const hasAction = this.hasAvailableSkillAction(player);
+      if (hasAction) {
+        const diamondX = this.getSlotX(3) + SKILL_ICON_SIZE + 14;
+        const diamondY = this.getSlotY() + SKILL_ICON_SIZE / 2;
+        const pulseAlpha = 0.5 + Math.sin(this.scene.time.now * 0.005) * 0.4;
+        this.spIndicator.fillStyle(0xfbbf24, pulseAlpha);
+        this.spIndicator.fillTriangle(
+          diamondX, diamondY - 7,
+          diamondX + 6, diamondY,
+          diamondX, diamondY + 7,
+        );
+        this.spIndicator.fillTriangle(
+          diamondX, diamondY - 7,
+          diamondX - 6, diamondY,
+          diamondX, diamondY + 7,
+        );
+      }
+    }
+
+    // --- Passive slot indicators ---
+    this.drawPassiveIndicators(player);
+  }
+
+  private hasAvailableSkillAction(player: import('@/core/types').PlayerState): boolean {
+    // Check if any skill can be unlocked or upgraded with current SP
+    for (const def of Object.values(SKILLS)) {
+      if (def.id === 'basic_attack') continue;
+      if (player.unlockedSkills.includes(def.id)) {
+        // Can level up?
+        const level = player.skillLevels[def.id] ?? 0;
+        if (level < MAX_SKILL_LEVEL && player.skillPoints >= 1) return true;
+      } else {
+        // Can unlock?
+        if (player.skillPoints >= def.unlockCost) {
+          const condition = checkUnlockCondition(def.id);
+          if (condition.met) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private drawPassiveIndicators(player: import('@/core/types').PlayerState): void {
+    this.passivePlate.clear();
+
+    const slotW = 48;
+    const slotH = 22;
+    const gap = 6;
+    const plateW = slotW * 2 + gap + 16;
+    const plateH = slotH + 12;
+    const plateX = (this.scene.scale.width || GAME_WIDTH) / 2 - plateW / 2;
+    const plateY = this.getSlotY() + SKILL_ICON_SIZE + 14;
+
+    drawSectionCard(this.passivePlate, plateX, plateY, plateW, plateH, true, 6);
+
+    for (let i = 0; i < 2; i++) {
+      const sx = plateX + 8 + i * (slotW + gap);
+      const sy = plateY + 6;
+
+      this.passivePlate.fillStyle(0x111827, 0.7);
+      this.passivePlate.fillRoundedRect(sx, sy, slotW, slotH, 4);
+      this.passivePlate.lineStyle(1, 0x334155, 0.6);
+      this.passivePlate.strokeRoundedRect(sx, sy, slotW, slotH, 4);
+
+      const passiveId = player.passiveSkills[i];
+      const txt = this.passiveTexts[i];
+      txt.setPosition(sx + slotW / 2, sy + slotH / 2);
+
+      if (passiveId) {
+        const def = SKILLS[passiveId];
+        txt.setText(def ? def.name.substring(0, 8) : passiveId.substring(0, 8));
+        txt.setColor(UI_THEME.accent);
+      } else {
+        txt.setText('\u2014');
+        txt.setColor(UI_THEME.textMuted);
+      }
+    }
+  }
+
+  private drawBarPlate(): void {
+    const x = this.getSlotX(0) - 10;
+    const y = this.getSlotY() - 10;
+    const width = this.totalWidth + 20;
+    const height = SKILL_ICON_SIZE + 20;
+    this.plate.clear();
+    drawSectionCard(this.plate, x, y, width, height, false, 10);
   }
 }
