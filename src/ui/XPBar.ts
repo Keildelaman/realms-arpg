@@ -9,13 +9,15 @@ import {
   GAME_HEIGHT,
   COLORS,
 } from '@/data/constants';
+import { UI_THEME } from '@/ui/ui-theme';
 
 // --- Layout constants (local to this component) ---
-const XP_BAR_HEIGHT = 14;
+const XP_BAR_HEIGHT = 16;
 
 export class XPBar extends Phaser.GameObjects.Container {
   private bg: Phaser.GameObjects.Graphics;
   private fill: Phaser.GameObjects.Graphics;
+  private border: Phaser.GameObjects.Graphics;
   private levelText: Phaser.GameObjects.Text;
   private xpText: Phaser.GameObjects.Text;
 
@@ -40,11 +42,14 @@ export class XPBar extends Phaser.GameObjects.Container {
     this.fill = scene.add.graphics();
     this.add(this.fill);
 
+    this.border = scene.add.graphics();
+    this.add(this.border);
+
     // Level text (left side)
     this.levelText = scene.add.text(8, this.barY - 16, '', {
       fontFamily: 'monospace',
-      fontSize: '13px',
-      color: COLORS.uiText,
+      fontSize: '12px',
+      color: UI_THEME.text,
       stroke: '#000000',
       strokeThickness: 2,
     });
@@ -53,8 +58,8 @@ export class XPBar extends Phaser.GameObjects.Container {
     // XP progress text (right side)
     this.xpText = scene.add.text(this.barWidth - 8, this.barY - 16, '', {
       fontFamily: 'monospace',
-      fontSize: '11px',
-      color: COLORS.uiTextDim,
+      fontSize: '10px',
+      color: UI_THEME.textDim,
       stroke: '#000000',
       strokeThickness: 2,
     });
@@ -73,6 +78,9 @@ export class XPBar extends Phaser.GameObjects.Container {
     const bgColor = Phaser.Display.Color.HexStringToColor(COLORS.xpBarBg).color;
     this.bg.fillStyle(bgColor, 0.9);
     this.bg.fillRect(0, this.barY, this.barWidth, XP_BAR_HEIGHT);
+    this.border.clear();
+    this.border.lineStyle(1, 0x334155, 0.9);
+    this.border.strokeRect(0, this.barY, this.barWidth, XP_BAR_HEIGHT);
   }
 
   private onResize = (gameSize: Phaser.Structs.Size): void => {

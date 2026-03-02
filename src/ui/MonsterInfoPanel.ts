@@ -1,22 +1,22 @@
 // ============================================================================
-// MonsterInfoPanel — Displays focused monster's stats in the UI
+// MonsterInfoPanel - Displays focused monster info in a compact top-center card
 // ============================================================================
 
 import Phaser from 'phaser';
 import { getState, getMonsterById } from '@/core/game-state';
-import { on } from '@/core/event-bus';
+import { on, off } from '@/core/event-bus';
 import { COLORS, GAME_WIDTH } from '@/data/constants';
+import { ZONES } from '@/data/zones.data';
 import { getMonsterAffix } from '@/data/monster-affixes.data';
+import { UI_THEME, drawPanelShell, drawSectionCard } from '@/ui/ui-theme';
 
-// --- Layout constants ---
-const PANEL_WIDTH = 200;
-const PANEL_HEIGHT = 130;
-const PANEL_PADDING = 10;
-const PANEL_MARGIN = 16;
+const PANEL_WIDTH = 320;
+const PANEL_HEIGHT = 132;
+const PANEL_PADDING = 12;
 const HP_BAR_HEIGHT = 10;
 
 const RARITY_COLORS: Record<string, string> = {
-  normal: '#e5e5e5',
+  normal: '#e2e8f0',
   magic: '#60a5fa',
   rare: '#fbbf24',
 };
@@ -24,7 +24,7 @@ const RARITY_COLORS: Record<string, string> = {
 export class MonsterInfoPanel extends Phaser.GameObjects.Container {
   private bg: Phaser.GameObjects.Graphics;
   private nameText: Phaser.GameObjects.Text;
-  private levelText: Phaser.GameObjects.Text;
+  private metaText: Phaser.GameObjects.Text;
   private hpBarBg: Phaser.GameObjects.Graphics;
   private hpBarFill: Phaser.GameObjects.Graphics;
   private hpText: Phaser.GameObjects.Text;
@@ -32,53 +32,48 @@ export class MonsterInfoPanel extends Phaser.GameObjects.Container {
   private typeText: Phaser.GameObjects.Text;
   private affixText: Phaser.GameObjects.Text;
 
-  private isShown: boolean = false;
-  private slideProgress: number = 0;
+  private isShown = false;
+  private slideProgress = 0;
 
   constructor(scene: Phaser.Scene) {
     const w = scene.scale.width || GAME_WIDTH;
-    const panelY = 200 + 16 + 16; // below minimap (200px) + minimap margin (16px) + gap (16px)
-    super(scene, w - PANEL_WIDTH - PANEL_MARGIN, panelY);
+    const panelX = Math.floor((w - PANEL_WIDTH) / 2);
+    super(scene, panelX, 14);
     scene.add.existing(this);
     this.setScrollFactor(0);
     this.setDepth(110);
 
-    // Background panel
     this.bg = scene.add.graphics();
     this.add(this.bg);
     this.drawBackground();
 
-    // Monster name
     this.nameText = scene.add.text(PANEL_PADDING, PANEL_PADDING, '', {
       fontFamily: 'monospace',
-      fontSize: '13px',
-      color: '#e5e5e5',
+      fontSize: '15px',
+      color: UI_THEME.text,
       stroke: '#000',
       strokeThickness: 2,
-      wordWrap: { width: PANEL_WIDTH - PANEL_PADDING * 2 },
+      wordWrap: { width: PANEL_WIDTH - PANEL_PADDING * 2 - 88 },
     });
     this.add(this.nameText);
 
-    // Level text (right-aligned)
-    this.levelText = scene.add.text(PANEL_WIDTH - PANEL_PADDING, PANEL_PADDING, '', {
+    this.metaText = scene.add.text(PANEL_WIDTH - PANEL_PADDING, PANEL_PADDING + 1, '', {
       fontFamily: 'monospace',
-      fontSize: '11px',
-      color: COLORS.uiTextDim,
+      fontSize: '10px',
+      color: UI_THEME.textDim,
       stroke: '#000',
       strokeThickness: 1,
+      align: 'right',
     }).setOrigin(1, 0);
-    this.add(this.levelText);
+    this.add(this.metaText);
 
-    // HP bar background
     this.hpBarBg = scene.add.graphics();
     this.add(this.hpBarBg);
 
-    // HP bar fill
     this.hpBarFill = scene.add.graphics();
     this.add(this.hpBarFill);
 
-    // HP text
-    this.hpText = scene.add.text(PANEL_WIDTH / 2, PANEL_PADDING + 22, '', {
+    this.hpText = scene.add.text(PANEL_WIDTH / 2, PANEL_PADDING + 26, '', {
       fontFamily: 'monospace',
       fontSize: '10px',
       color: '#ffffff',
@@ -87,28 +82,25 @@ export class MonsterInfoPanel extends Phaser.GameObjects.Container {
     }).setOrigin(0.5, 0);
     this.add(this.hpText);
 
-    // Archetype label
     this.archetypeText = scene.add.text(PANEL_PADDING, PANEL_PADDING + 52, '', {
       fontFamily: 'monospace',
       fontSize: '11px',
-      color: '#a3a3a3',
+      color: '#cbd5e1',
       stroke: '#000',
       strokeThickness: 1,
     });
     this.add(this.archetypeText);
 
-    // Monster type label
-    this.typeText = scene.add.text(PANEL_PADDING, PANEL_PADDING + 68, '', {
+    this.typeText = scene.add.text(PANEL_PADDING, PANEL_PADDING + 69, '', {
       fontFamily: 'monospace',
       fontSize: '10px',
-      color: '#737373',
+      color: '#94a3b8',
       stroke: '#000',
       strokeThickness: 1,
     });
     this.add(this.typeText);
 
-    // Affix names
-    this.affixText = scene.add.text(PANEL_PADDING, PANEL_PADDING + 84, '', {
+    this.affixText = scene.add.text(PANEL_PADDING, PANEL_PADDING + 86, '', {
       fontFamily: 'monospace',
       fontSize: '10px',
       color: '#c084fc',
@@ -118,22 +110,24 @@ export class MonsterInfoPanel extends Phaser.GameObjects.Container {
     });
     this.add(this.affixText);
 
-    // Start hidden
     this.setVisible(false);
     this.setAlpha(0);
 
-    // Listen for target changes
     on('player:targetChanged', this.onTargetChanged);
+    scene.scale.on('resize', this.onResize, this);
   }
 
-  private onTargetChanged = (_data: { monsterId: string | null }): void => {
-    // Show/hide is handled in update based on targetMonsterId
+  private onTargetChanged = (): void => {
+    // Visibility handled in update by targetMonsterId.
+  };
+
+  private onResize = (size: Phaser.Structs.Size): void => {
+    this.setPosition(Math.floor((size.width - PANEL_WIDTH) / 2), 14);
   };
 
   update(dt: number): void {
     const state = getState();
     const targetId = state.player.targetMonsterId;
-
     const shouldShow = targetId !== null;
 
     if (shouldShow && !this.isShown) {
@@ -143,79 +137,68 @@ export class MonsterInfoPanel extends Phaser.GameObjects.Container {
       this.isShown = false;
     }
 
-    // Slide animation
     if (this.isShown && this.slideProgress < 1) {
-      this.slideProgress = Math.min(1, this.slideProgress + dt * 5);
+      this.slideProgress = Math.min(1, this.slideProgress + dt * 6);
       this.setAlpha(this.slideProgress);
     } else if (!this.isShown && this.slideProgress > 0) {
-      this.slideProgress = Math.max(0, this.slideProgress - dt * 5);
+      this.slideProgress = Math.max(0, this.slideProgress - dt * 6);
       this.setAlpha(this.slideProgress);
-      if (this.slideProgress <= 0) {
-        this.setVisible(false);
-      }
+      if (this.slideProgress <= 0) this.setVisible(false);
     }
 
     if (!this.visible || !targetId) return;
 
     const monster = getMonsterById(targetId);
     if (!monster || monster.isDead) {
-      // Auto-clear
       state.player.targetMonsterId = null;
       return;
     }
 
-    // Update name with rarity color
-    const nameColor = RARITY_COLORS[monster.rarity] ?? '#e5e5e5';
+    const nameColor = RARITY_COLORS[monster.rarity] ?? '#e2e8f0';
     this.nameText.setColor(nameColor);
     this.nameText.setText(monster.name);
 
-    // Level
-    const zone = ZONES_LEVEL_DISPLAY[monster.zone] ?? '';
-    this.levelText.setText(zone);
+    const zoneName = ZONES[monster.zone]?.name ?? monster.zone;
+    const rarityLabel = monster.rarity.charAt(0).toUpperCase() + monster.rarity.slice(1);
+    this.metaText.setText(`${rarityLabel}\n${zoneName}`);
 
-    // HP bar
-    const hpRatio = Math.max(0, monster.currentHP / monster.maxHP);
+    const hpRatio = Math.max(0, monster.currentHP / Math.max(1, monster.maxHP));
     const barX = PANEL_PADDING;
-    const barY = PANEL_PADDING + 34;
+    const barY = PANEL_PADDING + 36;
     const barWidth = PANEL_WIDTH - PANEL_PADDING * 2;
 
     this.hpBarBg.clear();
-    this.hpBarBg.fillStyle(0x1a1a1a, 0.8);
-    this.hpBarBg.fillRect(barX, barY, barWidth, HP_BAR_HEIGHT);
+    this.hpBarBg.fillStyle(0x111827, 0.92);
+    this.hpBarBg.fillRoundedRect(barX, barY, barWidth, HP_BAR_HEIGHT, 4);
+    this.hpBarBg.lineStyle(1, 0x334155, 0.9);
+    this.hpBarBg.strokeRoundedRect(barX, barY, barWidth, HP_BAR_HEIGHT, 4);
 
     this.hpBarFill.clear();
     const hpColor = Phaser.Display.Color.HexStringToColor(COLORS.monsterHP).color;
     this.hpBarFill.fillStyle(hpColor, 1);
-    this.hpBarFill.fillRect(barX, barY, barWidth * hpRatio, HP_BAR_HEIGHT);
+    if (hpRatio > 0) {
+      this.hpBarFill.fillRoundedRect(barX, barY, barWidth * hpRatio, HP_BAR_HEIGHT, 4);
+    }
 
-    // Shield overlay
     if (monster.maxShield > 0 && monster.currentShield > 0) {
       const shieldRatio = monster.currentShield / monster.maxShield;
       const shieldColor = Phaser.Display.Color.HexStringToColor(COLORS.monsterShield).color;
-      this.hpBarFill.fillStyle(shieldColor, 0.6);
-      this.hpBarFill.fillRect(barX, barY + HP_BAR_HEIGHT, barWidth * shieldRatio, 3);
+      this.hpBarFill.fillStyle(shieldColor, 0.72);
+      this.hpBarFill.fillRoundedRect(barX, barY + HP_BAR_HEIGHT + 2, barWidth * shieldRatio, 4, 2);
     }
 
     this.hpText.setText(`${Math.ceil(monster.currentHP)} / ${monster.maxHP}`);
     this.hpText.setY(barY - 1);
 
-    // Archetype
     const archLabel = monster.archetype.charAt(0).toUpperCase() + monster.archetype.slice(1);
-    const atk = monster.attack;
-    const def = monster.defense + monster.armor;
-    this.archetypeText.setText(`${archLabel}  ATK:${atk}  DEF:${def}`);
+    this.archetypeText.setText(`${archLabel}  ATK:${monster.attack}  DEF:${monster.defense}  RES:${monster.magicResist}`);
 
-    // Monster types
     const typeLabels = monster.types.filter(t => t !== 'normal').join(', ');
-    this.typeText.setText(typeLabels ? `Type: ${typeLabels}` : '');
+    this.typeText.setText(typeLabels ? `Types: ${typeLabels}` : 'Types: -');
 
-    // Affixes
     if (monster.affixes.length > 0) {
       const affixNames = monster.affixes
-        .map(a => {
-          const def = getMonsterAffix(a.id);
-          return def?.name ?? a.id;
-        })
+        .map(a => getMonsterAffix(a.id)?.name ?? a.id)
         .join(', ');
       this.affixText.setText(affixNames);
       this.affixText.setColor(monster.rarity === 'rare' ? '#fbbf24' : '#60a5fa');
@@ -226,12 +209,13 @@ export class MonsterInfoPanel extends Phaser.GameObjects.Container {
 
   private drawBackground(): void {
     this.bg.clear();
-    this.bg.fillStyle(0x000000, 0.75);
-    this.bg.fillRoundedRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT, 6);
-    this.bg.lineStyle(1, 0x333333, 0.8);
-    this.bg.strokeRoundedRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT, 6);
+    drawPanelShell(this.bg, 0, 0, PANEL_WIDTH, PANEL_HEIGHT, 10);
+    drawSectionCard(this.bg, 10, 10, PANEL_WIDTH - 20, PANEL_HEIGHT - 20, false);
+  }
+
+  destroy(fromScene?: boolean): void {
+    off('player:targetChanged', this.onTargetChanged);
+    this.scene.scale.off('resize', this.onResize, this);
+    super.destroy(fromScene);
   }
 }
-
-// Simple zone display — just show zone name if available
-const ZONES_LEVEL_DISPLAY: Record<string, string> = {};

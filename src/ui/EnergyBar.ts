@@ -5,12 +5,14 @@
 import Phaser from 'phaser';
 import { getPlayer } from '@/core/game-state';
 import { COLORS, GAME_HEIGHT } from '@/data/constants';
+import { drawSectionCard } from '@/ui/ui-theme';
 
 // --- Layout constants (local to this component) ---
 const ENERGY_BAR_WIDTH = 240;
 const ENERGY_BAR_HEIGHT = 18;
 
 export class EnergyBar extends Phaser.GameObjects.Container {
+  private plate: Phaser.GameObjects.Graphics;
   private bg: Phaser.GameObjects.Graphics;
   private fill: Phaser.GameObjects.Graphics;
   private border: Phaser.GameObjects.Graphics;
@@ -26,6 +28,9 @@ export class EnergyBar extends Phaser.GameObjects.Container {
     this.setScrollFactor(0);
     this.setDepth(100);
     scene.scale.on('resize', this.onResize, this);
+
+    this.plate = scene.add.graphics();
+    this.add(this.plate);
 
     // Background bar
     this.bg = scene.add.graphics();
@@ -67,8 +72,14 @@ export class EnergyBar extends Phaser.GameObjects.Container {
     this.add(this.energyText);
 
     // Draw static elements
+    this.drawPlate();
     this.drawBackground();
     this.drawBorder();
+  }
+
+  private drawPlate(): void {
+    this.plate.clear();
+    drawSectionCard(this.plate, -6, -5, ENERGY_BAR_WIDTH + 12, ENERGY_BAR_HEIGHT + 10, true, 7);
   }
 
   private drawBackground(): void {

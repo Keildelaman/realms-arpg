@@ -10,11 +10,11 @@ import {
   GAME_WIDTH,
   GAME_HEIGHT,
 } from '@/data/constants';
+import { UI_THEME, drawPanelShell, drawSectionCard } from '@/ui/ui-theme';
 
-const MINIMAP_SIZE = 200;
+const MINIMAP_SIZE = 206;
 const MINIMAP_MARGIN = 16;
-const MINIMAP_BG_COLOR = 0x1a1a2e;
-const MINIMAP_BORDER_COLOR = 0x444444;
+const MINIMAP_INNER_SIZE = 184;
 const PLAYER_DOT_COLOR = 0x4488ff;
 const MONSTER_DOT_COLOR = 0xff4444;
 const BOSS_DOT_COLOR = 0xff2222;
@@ -26,6 +26,7 @@ export class Minimap extends Phaser.GameObjects.Container {
   private bg: Phaser.GameObjects.Graphics;
   private dots: Phaser.GameObjects.Graphics;
   private border: Phaser.GameObjects.Graphics;
+  private titleText: Phaser.GameObjects.Text;
   private minimapX: number;
   private minimapY: number;
 
@@ -47,18 +48,28 @@ export class Minimap extends Phaser.GameObjects.Container {
     this.border = scene.add.graphics();
     this.add(this.border);
 
+    this.titleText = scene.add.text(0, 0, 'Map', {
+      fontFamily: 'monospace',
+      fontSize: '10px',
+      color: UI_THEME.textDim,
+      stroke: '#000000',
+      strokeThickness: 1,
+    });
+    this.add(this.titleText);
+
     this.drawStaticElements();
     scene.scale.on('resize', this.onResize, this);
   }
 
   private drawStaticElements(): void {
     this.bg.clear();
-    this.bg.fillStyle(MINIMAP_BG_COLOR, 0.86);
-    this.bg.fillRect(this.minimapX, this.minimapY, MINIMAP_SIZE, MINIMAP_SIZE);
+    drawPanelShell(this.bg, this.minimapX, this.minimapY, MINIMAP_SIZE, MINIMAP_SIZE, 8);
+    drawSectionCard(this.bg, this.minimapX + 10, this.minimapY + 18, MINIMAP_INNER_SIZE, MINIMAP_INNER_SIZE, false, 6);
 
     this.border.clear();
-    this.border.lineStyle(1, MINIMAP_BORDER_COLOR, 1.0);
-    this.border.strokeRect(this.minimapX, this.minimapY, MINIMAP_SIZE, MINIMAP_SIZE);
+    this.border.lineStyle(1, 0x334155, 0.95);
+    this.border.strokeRoundedRect(this.minimapX + 10, this.minimapY + 18, MINIMAP_INNER_SIZE, MINIMAP_INNER_SIZE, 6);
+    this.titleText.setPosition(this.minimapX + 12, this.minimapY + 5);
   }
 
   private onResize = (gameSize: Phaser.Structs.Size): void => {
@@ -77,8 +88,8 @@ export class Minimap extends Phaser.GameObjects.Container {
     const ratioY = Math.max(0, Math.min(1, worldY / Math.max(1, worldHeight)));
 
     return {
-      x: this.minimapX + ratioX * MINIMAP_SIZE,
-      y: this.minimapY + ratioY * MINIMAP_SIZE,
+      x: this.minimapX + 10 + ratioX * MINIMAP_INNER_SIZE,
+      y: this.minimapY + 18 + ratioY * MINIMAP_INNER_SIZE,
     };
   }
 
@@ -185,15 +196,20 @@ export class Minimap extends Phaser.GameObjects.Container {
     this.dots.clear();
 
     if (state.gameMode === 'hub') {
+      this.titleText.setText('Hub');
       this.drawHubView();
       return;
     }
 
     if (state.activeExpedition) {
+      const zoneId = state.activeExpedition.zoneId;
+      const zoneName = ZONES[zoneId]?.name ?? zoneId;
+      this.titleText.setText(zoneName);
       this.drawExpeditionView();
       return;
     }
 
+    this.titleText.setText('Zone');
     this.drawLegacyZoneView();
   }
 

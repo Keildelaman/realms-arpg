@@ -12,6 +12,7 @@ const FLAT_AFFIX_IDS = new Set([
   'flat_magic_power',
   'flat_max_hp',
   'flat_defense',
+  'flat_magic_resist',
   'skill_power_level',
   'skill_speed_level',
   'skill_crit_level',
@@ -29,9 +30,13 @@ const AFFIX_NAMES: Record<string, string> = {
   crit_damage:       'Crit Damage',
   attack_speed:      'Attack Speed',
   armor_penetration: 'Armor Pen',
+  magic_pen:         'Magic Pen',
+  life_steal:        'Life Steal',
+  spell_leech:       'Spell Leech',
   // Defensive
   flat_max_hp:       'Max HP',
   flat_defense:      'Defense',
+  flat_magic_resist: 'Magic Resist',
   hp_regen:          'HP Regen',
   dodge_chance:      'Dodge Chance',
   damage_reduction:  'Dmg Reduction',
@@ -106,13 +111,19 @@ export function formatStatValue(statKey: string, value: number): string {
     case 'magicPower':
     case 'maxHP':
     case 'moveSpeed':
+    case 'magicResist':
       return String(Math.round(value));
+    case 'magicPen':
+      return `${(value * 100).toFixed(1)}%`;
     case 'critChance':
       return `${(value * 100).toFixed(1)}%`;
     case 'critDamage':
       return `${(value * 100).toFixed(0)}%`;
     case 'attackSpeed':
       return value.toFixed(2);
+    case 'lifeSteal':
+    case 'spellLeech':
+      return `${(value * 100).toFixed(1)}%`;
     default:
       return String(Math.round(value));
   }

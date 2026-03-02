@@ -6,13 +6,15 @@ import Phaser from 'phaser';
 import { getPlayer } from '@/core/game-state';
 import { on } from '@/core/event-bus';
 import { COLORS, GAME_HEIGHT } from '@/data/constants';
+import { UI_THEME, drawSectionCard } from '@/ui/ui-theme';
 
 // --- Layout constants (local to this component) ---
-const HEALTH_BAR_WIDTH = 240;
+const HEALTH_BAR_WIDTH = 250;
 const HEALTH_BAR_HEIGHT = 24;
 
 export class HealthBar extends Phaser.GameObjects.Container {
   private bg: Phaser.GameObjects.Graphics;
+  private plate: Phaser.GameObjects.Graphics;
   private fill: Phaser.GameObjects.Graphics;
   private border: Phaser.GameObjects.Graphics;
   private hpText: Phaser.GameObjects.Text;
@@ -35,6 +37,9 @@ export class HealthBar extends Phaser.GameObjects.Container {
     // Pulse glow (behind everything)
     this.pulseGlow = scene.add.graphics();
     this.add(this.pulseGlow);
+
+    this.plate = scene.add.graphics();
+    this.add(this.plate);
 
     // Background bar
     this.bg = scene.add.graphics();
@@ -73,6 +78,7 @@ export class HealthBar extends Phaser.GameObjects.Container {
     // Draw static elements
     this.drawBackground();
     this.drawBorder();
+    this.drawPlate();
 
     // Subscribe to damage events for flash effect
     on('player:damaged', this.onDamaged);
@@ -81,12 +87,17 @@ export class HealthBar extends Phaser.GameObjects.Container {
   private drawBackground(): void {
     const bgColor = Phaser.Display.Color.HexStringToColor(COLORS.playerHPBg).color;
     this.bg.fillStyle(bgColor, 1);
-    this.bg.fillRoundedRect(0, 0, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT, 3);
+    this.bg.fillRoundedRect(0, 0, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT, 4);
+  }
+
+  private drawPlate(): void {
+    this.plate.clear();
+    drawSectionCard(this.plate, -6, -6, HEALTH_BAR_WIDTH + 12, HEALTH_BAR_HEIGHT + 12, false, 8);
   }
 
   private drawBorder(): void {
-    this.border.lineStyle(1, 0x666666, 0.6);
-    this.border.strokeRoundedRect(0, 0, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT, 3);
+    this.border.lineStyle(1, 0x64748b, 0.8);
+    this.border.strokeRoundedRect(0, 0, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT, 4);
   }
 
   update(dt: number): void {
@@ -113,7 +124,7 @@ export class HealthBar extends Phaser.GameObjects.Container {
     this.fill.fillStyle(fillColor, 1);
     const fillWidth = HEALTH_BAR_WIDTH * this.displayedRatio;
     if (fillWidth > 0) {
-      this.fill.fillRoundedRect(0, 0, fillWidth, HEALTH_BAR_HEIGHT, 3);
+      this.fill.fillRoundedRect(0, 0, fillWidth, HEALTH_BAR_HEIGHT, 4);
     }
 
     // Low-HP pulse glow when below 30%
@@ -127,6 +138,7 @@ export class HealthBar extends Phaser.GameObjects.Container {
 
     // Update text
     this.hpText.setText(`${Math.ceil(player.currentHP)} / ${player.maxHP}`);
+    this.labelText.setColor(this.targetRatio < 0.3 ? UI_THEME.danger : COLORS.playerHP);
   }
 
   private onDamaged = (): void => {
