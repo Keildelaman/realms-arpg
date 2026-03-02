@@ -5,19 +5,20 @@
 import type {
   ItemInstance,
   LootDrop,
+  GoldDrop,
 } from '@/core/types';
 import { on, emit } from '@/core/event-bus';
 import {
   getPlayer,
   getMonsterById,
   addToInventory,
+  isInventoryFull,
 } from '@/core/game-state';
 import {
   LOOT_MAGNET_RANGE,
   LOOT_DESPAWN_TIME,
   LOOT_DROP_SPREAD,
   BOSS_SECOND_DROP_CHANCE,
-  INVENTORY_SIZE,
 } from '@/data/constants';
 import { getRarityScaling } from '@/systems/monster-rarity';
 
@@ -28,6 +29,12 @@ const activeLootDrops: LootDrop[] = [];
 
 /** Next loot drop ID counter. */
 let nextLootId = 1;
+
+/** Active gold drops in the world. */
+const activeGoldDrops: GoldDrop[] = [];
+
+/** Next gold drop ID counter. */
+let nextGoldId = 1;
 
 /** Speed at which loot moves toward the player during magnet pickup (px/s). */
 const LOOT_MAGNET_SPEED = 350;
@@ -130,6 +137,33 @@ export function spawnLoot(item: ItemInstance, x: number, y: number): void {
   emit('item:dropped', { item, x: drop.x, y: drop.y });
 }
 
+// --- Gold spawning ---
+
+/**
+ * Spawn a gold drop at the given world position.
+ */
+export function spawnGold(amount: number, x: number, y: number): void {
+  const spreadX = (Math.random() - 0.5) * LOOT_DROP_SPREAD;
+  const spreadY = (Math.random() - 0.5) * LOOT_DROP_SPREAD;
+  const drop: GoldDrop = {
+    id: `gold_${nextGoldId++}`,
+    amount,
+    x: x + spreadX,
+    y: y + spreadY,
+    createdAt: Date.now(),
+    isPickedUp: false,
+  };
+  activeGoldDrops.push(drop);
+  emit('gold:spawned', { id: drop.id, amount: drop.amount, x: drop.x, y: drop.y });
+}
+
+/**
+ * Get all active (not picked up) gold drops.
+ */
+export function getActiveGoldDrops(): GoldDrop[] {
+  return activeGoldDrops.filter(d => !d.isPickedUp);
+}
+
 // --- Loot pickup ---
 
 /**
@@ -143,11 +177,6 @@ export function pickupLootByIndex(index: number): boolean {
 
   const drop = activeLootDrops[index];
   if (drop.isPickedUp) return false;
-
-  const player = getPlayer();
-
-  // Check inventory space
-  if (player.inventory.length >= INVENTORY_SIZE) return false;
 
   // Add to inventory
   const added = addToInventory(drop.item);
@@ -200,6 +229,7 @@ export function getActiveLootCount(): number {
  */
 export function clearAllLootDrops(): void {
   activeLootDrops.length = 0;
+  activeGoldDrops.length = 0;
 }
 
 // --- Event handlers ---
@@ -256,8 +286,13 @@ export function init(): void {
   // Clear all active loot drops
   activeLootDrops.length = 0;
   nextLootId = 1;
+  activeGoldDrops.length = 0;
+  nextGoldId = 1;
 
   on('monster:died', onMonsterDied);
+  on('gold:dropped', (data) => {
+    spawnGold(data.amount, data.x, data.y);
+  });
 }
 
 export function update(dt: number): void {
@@ -293,7 +328,7 @@ export function update(dt: number): void {
 
       if (dist < 8) {
         // Close enough — pick up
-        if (player.inventory.length < INVENTORY_SIZE) {
+        if (!isInventoryFull()) {
           const added = addToInventory(drop.item);
           if (added) {
             drop.isPickedUp = true;
@@ -307,6 +342,31 @@ export function update(dt: number): void {
         const moveY = (dy / dist) * LOOT_MAGNET_SPEED * dt;
         drop.x += moveX;
         drop.y += moveY;
+      }
+    }
+  }
+
+  // Gold drop magnet (no inventory-full check; always collected)
+  for (let i = activeGoldDrops.length - 1; i >= 0; i--) {
+    const goldDrop = activeGoldDrops[i];
+    if (goldDrop.isPickedUp) { activeGoldDrops.splice(i, 1); continue; }
+
+    const ageSeconds = (now - goldDrop.createdAt) / 1000;
+    if (ageSeconds >= LOOT_DESPAWN_TIME) { activeGoldDrops.splice(i, 1); continue; }
+
+    const dx = player.x - goldDrop.x;
+    const dy = player.y - goldDrop.y;
+    const distSq = dx * dx + dy * dy;
+
+    if (distSq <= LOOT_MAGNET_RANGE * LOOT_MAGNET_RANGE) {
+      const dist = Math.sqrt(distSq);
+      if (dist < 8) {
+        goldDrop.isPickedUp = true;
+        emit('gold:collected', { amount: goldDrop.amount });
+        activeGoldDrops.splice(i, 1);
+      } else {
+        goldDrop.x += (dx / dist) * LOOT_MAGNET_SPEED * dt;
+        goldDrop.y += (dy / dist) * LOOT_MAGNET_SPEED * dt;
       }
     }
   }

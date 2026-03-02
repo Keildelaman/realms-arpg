@@ -106,6 +106,8 @@ interface SpawnDirectorState {
   packSizeMult: number;
 }
 
+type PackSpawnMode = 'spread' | 'reinforce';
+
 let initialized = false;
 let nextRunId = 1;
 let nextMonsterId = 0;
@@ -410,9 +412,10 @@ function createMonsterInstance(
     defense: def.defense + Math.floor((level - 1) * 0.5),
 
     armor: def.armor ?? 0,
+    magicResist: def.magicResist ?? 0,
     currentShield: shieldAmount,
     maxShield: shieldAmount,
-    shieldDamageReduction: def.shieldDamageReduction ?? 0,
+    statusImmunities: def.statusImmunities ? [...def.statusImmunities] : [],
 
     aiState: 'idle',
     aiTimer: 0,
@@ -468,6 +471,7 @@ function createMonsterInstance(
     fuseTimer: 0,
     isRetreating: false,
     shape: def.shape ?? 'square',
+    enemyStates: [],
   };
 
   // Apply rarity in expeditions
@@ -526,19 +530,30 @@ function chooseMonsterDefinition(zoneId: string, tier: number, rng: LocalRng): M
   return weighted[weighted.length - 1].def;
 }
 
-function spawnPackAt(point: ExpeditionEncounterPoint, run: ExpeditionRunState): number {
+function spawnPackAt(
+  point: ExpeditionEncounterPoint,
+  run: ExpeditionRunState,
+  mode: PackSpawnMode,
+  remainingAllowance: number,
+): number {
   if (director.totalSpawned >= director.totalBudget) return 0;
+  if (remainingAllowance <= 0) return 0;
 
   const zone = ZONES[run.zoneId];
   const rng = new LocalRng((run.seed ^ (director.totalSpawned * 2654435761)) >>> 0);
 
-  const basePack = 3 + Math.floor(run.tier * 0.9);
-  const rawPackSize = Math.round(basePack * point.packWeight * director.packSizeMult) + rng.int(-1, 2);
-  const packSize = Math.max(3, Math.min(12, rawPackSize));
+  const basePack = 2 + Math.floor(run.tier * 0.28);
+  const modeScalar = mode === 'spread' ? 0.74 : 1;
+  const spreadJitter = mode === 'spread' ? rng.int(-1, 1) : rng.int(-1, 2);
+  const rawPackSize = Math.round(basePack * modeScalar * point.packWeight * director.packSizeMult) + spreadJitter;
+  const modeMin = mode === 'spread' ? 1 : 2;
+  const modeMax = mode === 'spread' ? 3 : 6;
+  const minByRemaining = Math.min(modeMin, remainingAllowance);
+  const packSize = Math.max(minByRemaining, Math.min(modeMax, rawPackSize, remainingAllowance));
 
   let spawned = 0;
 
-  for (let i = 0; i < packSize; i++) {
+  for (let i = 0; i < packSize && spawned < remainingAllowance; i++) {
     if (director.totalSpawned >= director.totalBudget) break;
 
     const def = chooseMonsterDefinition(run.zoneId, run.tier, rng);
@@ -620,6 +635,74 @@ function sortEncounterIdsForInitialSpread(run: ExpeditionRunState): string[] {
   return out;
 }
 
+function pickCoveragePointIds(run: ExpeditionRunState, candidateIds: string[], desiredCount: number): string[] {
+  if (candidateIds.length <= desiredCount) {
+    return [...candidateIds];
+  }
+
+  const points: Array<{ id: string; x: number; y: number }> = [];
+  for (const id of candidateIds) {
+    const p = findEncounterById(run.map, id);
+    if (p) {
+      points.push({ id: p.id, x: p.x, y: p.y });
+    }
+  }
+
+  if (points.length <= desiredCount) {
+    return points.map(p => p.id);
+  }
+
+  const spawnX = run.checkpointX;
+  const spawnY = run.checkpointY;
+  const chosen: Array<{ id: string; x: number; y: number }> = [];
+
+  // Start at farthest-from-spawn point, then fill using farthest-point sampling.
+  let firstIdx = 0;
+  let farthestDist = -1;
+  for (let i = 0; i < points.length; i++) {
+    const d = Math.hypot(points[i].x - spawnX, points[i].y - spawnY);
+    if (d > farthestDist) {
+      farthestDist = d;
+      firstIdx = i;
+    }
+  }
+  chosen.push(points[firstIdx]);
+
+  while (chosen.length < desiredCount) {
+    let bestIdx = -1;
+    let bestScore = -1;
+
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      let isChosen = false;
+      for (const c of chosen) {
+        if (c.id === p.id) {
+          isChosen = true;
+          break;
+        }
+      }
+      if (isChosen) continue;
+
+      let minToChosen = Number.POSITIVE_INFINITY;
+      for (const c of chosen) {
+        const d = Math.hypot(p.x - c.x, p.y - c.y);
+        if (d < minToChosen) minToChosen = d;
+      }
+      const distFromSpawn = Math.hypot(p.x - spawnX, p.y - spawnY);
+      const score = minToChosen + distFromSpawn * 0.2;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx < 0) break;
+    chosen.push(points[bestIdx]);
+  }
+
+  return chosen.map(p => p.id);
+}
+
 function initialSpawn(run: ExpeditionRunState): void {
   const sortedIds = sortEncounterIdsForInitialSpread(run);
   const safeRadius = EXPEDITION_START_SAFE_RADIUS;
@@ -645,26 +728,71 @@ function initialSpawn(run: ExpeditionRunState): void {
     return;
   }
 
-  const spawnUntilTarget = (targetTotal: number): void => {
-    let cursor = 0;
-    let failedSpawns = 0;
-    const maxFailures = cycle.length * 3;
+  const spawnDistributedUntilTarget = (targetTotal: number): void => {
+    const pointPackCounts = new Map<string, number>();
+    for (const id of cycle) {
+      pointPackCounts.set(id, 0);
+    }
 
-    while (director.totalSpawned < targetTotal && failedSpawns < maxFailures) {
-      const id = cycle[cursor % cycle.length];
-      cursor += 1;
+    const desiredCoveragePoints = Math.max(4, Math.ceil(targetTotal / 2));
+    const coverageIds = pickCoveragePointIds(run, cycle, Math.min(cycle.length, desiredCoveragePoints));
 
+    // Coverage pass: one small pack on well-separated points first.
+    for (const id of coverageIds) {
+      if (director.totalSpawned >= targetTotal) break;
       const point = findEncounterById(run.map, id);
-      if (!point) {
-        failedSpawns += 1;
-        continue;
+      if (!point) continue;
+      const remaining = targetTotal - director.totalSpawned;
+      const spawned = spawnPackAt(point, run, 'spread', remaining);
+      if (spawned > 0) {
+        pointPackCounts.set(id, (pointPackCounts.get(id) ?? 0) + 1);
+      }
+    }
+
+    // Reinforcement passes: rotate across all points, avoid stacking one hotspot.
+    let reinforceStagnantRounds = 0;
+    while (director.totalSpawned < targetTotal && reinforceStagnantRounds < 4) {
+      let spawnedThisRound = 0;
+      for (const id of cycle) {
+        if (director.totalSpawned >= targetTotal) break;
+
+        const already = pointPackCounts.get(id) ?? 0;
+        if (already >= 3) continue;
+
+        const point = findEncounterById(run.map, id);
+        if (!point) continue;
+
+        const remaining = targetTotal - director.totalSpawned;
+        const spawned = spawnPackAt(point, run, 'reinforce', remaining);
+        if (spawned > 0) {
+          pointPackCounts.set(id, already + 1);
+          spawnedThisRound += spawned;
+        }
       }
 
-      const spawned = spawnPackAt(point, run);
-      if (spawned > 0) {
-        failedSpawns = 0;
+      if (spawnedThisRound <= 0) {
+        reinforceStagnantRounds += 1;
       } else {
-        failedSpawns += 1;
+        reinforceStagnantRounds = 0;
+      }
+    }
+
+    // Fallback fill: keep round-robin distribution across points instead of
+    // repeatedly hammering one point, but allow extra reinforcement when needed.
+    let stagnantRounds = 0;
+    while (director.totalSpawned < targetTotal && stagnantRounds < 2) {
+      let spawnedThisRound = 0;
+      for (const id of cycle) {
+        if (director.totalSpawned >= targetTotal) break;
+        const point = findEncounterById(run.map, id);
+        if (!point) continue;
+        const remaining = targetTotal - director.totalSpawned;
+        spawnedThisRound += spawnPackAt(point, run, 'reinforce', remaining);
+      }
+      if (spawnedThisRound <= 0) {
+        stagnantRounds += 1;
+      } else {
+        stagnantRounds = 0;
       }
     }
   };
@@ -700,13 +828,13 @@ function initialSpawn(run: ExpeditionRunState): void {
 
   if (run.map.objective === 'boss_hunt') {
     const supportTarget = Math.max(0, director.totalBudget - 1);
-    spawnUntilTarget(supportTarget);
+    spawnDistributedUntilTarget(supportTarget);
     const bossSpawned = spawnBossObjective();
     run.progress.requiredKills = bossSpawned ? 1 : Math.max(0, director.totalSpawned);
     return;
   }
 
-  spawnUntilTarget(director.totalBudget);
+  spawnDistributedUntilTarget(director.totalBudget);
   run.progress.requiredKills = Math.max(0, director.totalSpawned);
 }
 

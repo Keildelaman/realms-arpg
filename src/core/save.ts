@@ -3,11 +3,11 @@
 // ============================================================================
 
 import type { EquipmentSlot, ItemInstance, ExpeditionMetaProgress } from './types';
-import { getState, getPlayer, setExpeditionMeta } from './game-state';
+import { getState, getPlayer, setExpeditionMeta, createDefaultStash } from './game-state';
 import { recalculateStats } from '@/systems/player';
 import { getShopRefreshCount, restoreShopRefreshCount } from '@/systems/economy';
 import { on } from './event-bus';
-import { BASIC_ATTACK_COOLDOWN } from '@/data/constants';
+import { BASIC_ATTACK_COOLDOWN, INVENTORY_SIZE, STASH_TAB_SIZE } from '@/data/constants';
 
 // --- Constants ---
 
@@ -35,12 +35,19 @@ interface PlayerSaveData {
   unlockedSkills: string[];
   skillLevels: Record<string, number>;
   equipment: Record<EquipmentSlot, ItemInstance | null>;
-  inventory: ItemInstance[];
+  inventory: (ItemInstance | null)[];
   ascensionLevel: number;
   monstersKilled: number;
   totalDamageDealt: number;
   totalGoldEarned: number;
   bossesKilled: string[];
+  skillUsageCounts?: Record<string, number>;
+  skillUpgrades?: Record<string, { pathChoice: 'A' | 'B' | 'C' | null; tier: number }>;
+  firstUseShown?: Record<string, boolean>;
+  stash?: {
+    tabs: Array<{ id: string; name: string; color: number; items: (ItemInstance | null)[] }>;
+    activeTabIndex: number;
+  };
 }
 
 interface WorldSaveData {
@@ -88,12 +95,28 @@ function serializeToSave(): SaveData {
     unlockedSkills: [...player.unlockedSkills],
     skillLevels: { ...player.skillLevels },
     equipment: { ...player.equipment },
-    inventory: player.inventory.map(item => ({ ...item, affixes: item.affixes.map(a => ({ ...a })) })),
+    inventory: player.inventory.map(item =>
+      item ? { ...item, affixes: item.affixes.map(a => ({ ...a })) } : null
+    ),
     ascensionLevel: player.ascensionLevel,
     monstersKilled: player.monstersKilled,
     totalDamageDealt: player.totalDamageDealt,
     totalGoldEarned: player.totalGoldEarned,
     bossesKilled: [...player.bossesKilled],
+    skillUsageCounts: { ...player.skillUsageCounts },
+    skillUpgrades: { ...player.skillUpgrades },
+    firstUseShown: { ...player.firstUseShown },
+    stash: {
+      tabs: player.stash.tabs.map(tab => ({
+        id: tab.id,
+        name: tab.name,
+        color: tab.color,
+        items: tab.items.map(item =>
+          item ? { ...item, affixes: item.affixes.map(a => ({ ...a })) } : null
+        ),
+      })),
+      activeTabIndex: player.stash.activeTabIndex,
+    },
   };
 
   const worldSave: WorldSaveData = {
@@ -154,12 +177,58 @@ export function applySave(data: SaveData): void {
   player.unlockedSkills = [...data.player.unlockedSkills];
   player.skillLevels = { ...data.player.skillLevels };
   player.equipment = { ...data.player.equipment };
-  player.inventory = data.player.inventory.map(item => ({ ...item, affixes: item.affixes.map(a => ({ ...a })) }));
+  const savedInv = Array.isArray(data.player.inventory) ? data.player.inventory : [];
+  const inv: (ItemInstance | null)[] = Array(INVENTORY_SIZE).fill(null);
+  savedInv.forEach((item, i) => {
+    if (i < INVENTORY_SIZE && item && typeof item === 'object') {
+      inv[i] = { ...item, affixes: ((item as ItemInstance).affixes ?? []).map(a => ({ ...a })) };
+    }
+  });
+  player.inventory = inv;
   player.ascensionLevel = data.player.ascensionLevel;
   player.monstersKilled = data.player.monstersKilled;
   player.totalDamageDealt = data.player.totalDamageDealt;
   player.totalGoldEarned = data.player.totalGoldEarned;
   player.bossesKilled = [...data.player.bossesKilled];
+
+  // Restore skill usage counts
+  player.skillUsageCounts = data.player.skillUsageCounts
+    ? { ...data.player.skillUsageCounts }
+    : {};
+
+  // Restore skill upgrades
+  if (data.player.skillUpgrades) {
+    const upgrades: Record<string, import('./types').SkillUpgradeState> = {};
+    for (const [key, val] of Object.entries(data.player.skillUpgrades)) {
+      upgrades[key] = { pathChoice: val.pathChoice, tier: val.tier as 0 | 1 | 2 };
+    }
+    player.skillUpgrades = upgrades;
+  } else {
+    player.skillUpgrades = {};
+  }
+
+  // Restore first-use celebration tracking
+  player.firstUseShown = data.player.firstUseShown
+    ? { ...data.player.firstUseShown }
+    : {};
+
+  // Restore stash
+  if (data.player.stash) {
+    player.stash = {
+      activeTabIndex: data.player.stash.activeTabIndex ?? 0,
+      tabs: data.player.stash.tabs.map((tab, i) => {
+        const items: (ItemInstance | null)[] = Array(STASH_TAB_SIZE).fill(null);
+        (tab.items ?? []).forEach((item, j) => {
+          if (j < STASH_TAB_SIZE && item && typeof item === 'object') {
+            items[j] = { ...item, affixes: ((item as ItemInstance).affixes ?? []).map(a => ({ ...a })) };
+          }
+        });
+        return { id: tab.id ?? `tab_${i}`, name: tab.name ?? `Tab ${i + 1}`, color: tab.color ?? 0x94a3b8, items };
+      }),
+    };
+  } else {
+    player.stash = createDefaultStash();
+  }
 
   // 2. Reset transient player fields
   player.x = 640;
@@ -206,6 +275,8 @@ export function applySave(data: SaveData): void {
   state.isPaused = false;
   state.inventoryOpen = false;
   state.merchantOpen = false;
+  state.stashOpen = false;
+  state.codexOpen = false;
 }
 
 // --- Public API ---
@@ -259,8 +330,33 @@ export function deleteSaveGame(): void {
 // --- Migration ---
 
 function migrateIfNeeded(data: SaveData): SaveData {
-  // v1 → future: add migration logic here
+  // Idempotent migration: rename 'endurance' passive → 'flow_state'
+  migrateEnduranceToFlowState(data);
+
   return data;
+}
+
+function migrateEnduranceToFlowState(data: SaveData): void {
+  const p = data.player;
+
+  // passiveSkills: rename equipped slot
+  for (let i = 0; i < p.passiveSkills.length; i++) {
+    if (p.passiveSkills[i] === 'endurance') {
+      p.passiveSkills[i] = 'flow_state';
+    }
+  }
+
+  // unlockedSkills: rename entry
+  const idx = p.unlockedSkills.indexOf('endurance');
+  if (idx !== -1) {
+    p.unlockedSkills[idx] = 'flow_state';
+  }
+
+  // skillLevels: transfer level
+  if (p.skillLevels['endurance'] !== undefined && p.skillLevels['flow_state'] === undefined) {
+    p.skillLevels['flow_state'] = p.skillLevels['endurance'];
+    delete p.skillLevels['endurance'];
+  }
 }
 
 // --- Auto-save subscriptions ---
@@ -271,4 +367,5 @@ export function init(): void {
   on('item:equipped', saveGame);
   on('item:sold', saveGame);
   on('economy:purchase', saveGame);
+  on('stash:changed', saveGame);
 }

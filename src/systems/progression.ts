@@ -81,6 +81,7 @@ function checkLevelUp(): void {
     const spGained = skillPointsGainedAtLevel(player.level);
     if (spGained > 0) {
       player.skillPoints += spGained;
+      emit('skill:spGained', { amount: spGained, source: 'level' });
     }
 
     // Full heal on level up
@@ -132,6 +133,11 @@ export function getSPSpent(): number {
   return spent;
 }
 
+// --- Boss SP tracking ---
+
+/** Tracks which bosses have already granted SP (prevents re-granting after save/load) */
+const bossesGrantedSP = new Set<string>();
+
 // --- Event handlers ---
 
 function onMonsterDied(data: {
@@ -149,10 +155,27 @@ function onMonsterDied(data: {
   player.monstersKilled += 1;
 }
 
+function onBossDefeated(data: { zoneId: string; bossId: string }): void {
+  if (bossesGrantedSP.has(data.bossId)) return;
+  bossesGrantedSP.add(data.bossId);
+
+  const player = getPlayer();
+  player.skillPoints += 2;
+  emit('skill:spGained', { amount: 2, source: 'boss' });
+}
+
 // --- Lifecycle ---
 
 export function init(): void {
+  // Seed boss SP tracking from saved data
+  const player = getPlayer();
+  bossesGrantedSP.clear();
+  for (const bossId of player.bossesKilled) {
+    bossesGrantedSP.add(bossId);
+  }
+
   on('monster:died', onMonsterDied);
+  on('progression:bossDefeated', onBossDefeated);
 }
 
 export function update(_dt: number): void {

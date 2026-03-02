@@ -11,6 +11,8 @@ import type {
   ExpeditionRunState,
   ExpeditionMetaProgress,
   GameMode,
+  StashTab,
+  StashState,
 } from './types';
 import {
   BASE_PLAYER_HP,
@@ -25,9 +27,32 @@ import {
   MAX_ENERGY,
   BASE_XP_REQUIREMENT,
   INVENTORY_SIZE,
+  STASH_TAB_SIZE,
+  STASH_MAX_TABS,
+  STASH_FREE_TABS,
+  STASH_TAB_COSTS,
 } from '@/data/constants';
 import { ZONE_ORDER } from '@/data/zones.data';
 import { EXPEDITION_MAX_TIER } from '@/data/expeditions.data';
+import { emit } from '@/core/event-bus';
+
+function createDefaultStashTab(index: number): StashTab {
+  const names = ['Tab 1', 'Tab 2', 'Tab 3', 'Tab 4', 'Tab 5', 'Tab 6', 'Tab 7', 'Tab 8'];
+  const colors = [0x94a3b8, 0x86efac, 0xfbbf24, 0xf87171, 0x93c5fd, 0xd8b4fe, 0x4ade80, 0xf97316];
+  return {
+    id: `tab_${index}`,
+    name: names[index] ?? `Tab ${index + 1}`,
+    color: colors[index % colors.length]!,
+    items: Array(STASH_TAB_SIZE).fill(null) as (ItemInstance | null)[],
+  };
+}
+
+function createDefaultStash(): StashState {
+  return {
+    tabs: [0, 1, 2].map(createDefaultStashTab),
+    activeTabIndex: 0,
+  };
+}
 
 function createDefaultPlayer(): PlayerState {
   return {
@@ -44,6 +69,7 @@ function createDefaultPlayer(): PlayerState {
     baseAttack: BASE_PLAYER_ATTACK,
     baseDefense: BASE_PLAYER_DEFENSE,
     baseMagicPower: BASE_PLAYER_MAGIC_POWER,
+    baseMagicResist: 0,
     baseCritChance: BASE_CRIT_CHANCE,
     baseCritDamage: BASE_CRIT_DAMAGE,
     baseMoveSpeed: BASE_MOVE_SPEED,
@@ -65,12 +91,16 @@ function createDefaultPlayer(): PlayerState {
     statusPotency: 1.0,
 
     armorPen: 0,
+    magicPen: 0,
+    magicResist: 0,
     hpRegen: 0,
     dodgeChance: 0,
     damageReduction: 0,
     energyRegen: 0,
     goldFind: 0,
     xpBonus: 0,
+    lifeSteal: 0,
+    spellLeech: 0,
 
     skillPowerBoost: 0,
     skillSpeedBoost: 0,
@@ -86,10 +116,28 @@ function createDefaultPlayer(): PlayerState {
     skillAllLevel: 0,
 
     skillPoints: 1, // start with 1 SP for first skill
-    activeSkills: ['basic_attack', null, null, null, null, null],
-    passiveSkills: [null, null, null],
+    activeSkills: ['basic_attack', null, null, null],
+    passiveSkills: [null, null],
     unlockedSkills: [],
     skillLevels: {},
+
+    // Resonance
+    resonance: {
+      ash: 0, ember: 0, decayTimer: 0, dualityActive: false, flowReleaseBoost: false,
+    },
+
+    // Combat states
+    combatStates: {
+      flow: false, flowHitCount: 0, flowTimer: 0,
+      wrath: false, primed: false, primedMultiplier: 1.25,
+      wrathBonusExtra: 0, guaranteeStateApply: false,
+    },
+
+    // Skill upgrades (Phase 2)
+    skillUpgrades: {},
+
+    // Usage tracking
+    skillUsageCounts: {},
 
     equipment: {
       weapon: null,
@@ -99,7 +147,8 @@ function createDefaultPlayer(): PlayerState {
       boots: null,
       accessory: null,
     },
-    inventory: [],
+    inventory: Array(INVENTORY_SIZE).fill(null) as (ItemInstance | null)[],
+    stash: createDefaultStash(),
 
     x: 400,
     y: 300,
@@ -114,6 +163,7 @@ function createDefaultPlayer(): PlayerState {
 
     isAttacking: false,
     isDashing: false,
+    isStealth: false,
     isInvulnerable: false,
     lastAttackTime: 0,
     basicAttackCooldown: BASIC_ATTACK_COOLDOWN,
@@ -126,6 +176,8 @@ function createDefaultPlayer(): PlayerState {
     totalDamageDealt: 0,
     totalGoldEarned: 0,
     bossesKilled: [],
+
+    firstUseShown: {},
   };
 }
 
@@ -296,6 +348,8 @@ const state: GameState = {
 
   inventoryOpen: false,
   merchantOpen: false,
+  stashOpen: false,
+  codexOpen: false,
   selectedInventorySlot: -1,
 };
 
@@ -365,15 +419,41 @@ export function addXP(amount: number): void {
 }
 
 export function addToInventory(item: ItemInstance): boolean {
-  if (state.player.inventory.length >= INVENTORY_SIZE) return false;
-  state.player.inventory.push(item);
+  const inv = state.player.inventory;
+  const slot = inv.findIndex(s => s === null);
+  if (slot === -1) return false;
+  inv[slot] = item;
+  emit('inventory:itemAdded', { item, slotIndex: slot });
   return true;
 }
 
 export function removeFromInventory(itemId: string): ItemInstance | null {
-  const idx = state.player.inventory.findIndex(i => i.id === itemId);
+  const inv = state.player.inventory;
+  const idx = inv.findIndex(i => i?.id === itemId);
   if (idx === -1) return null;
-  return state.player.inventory.splice(idx, 1)[0];
+  const item = inv[idx] as ItemInstance;
+  inv[idx] = null;
+  return item;
+}
+
+export function swapInventoryItems(a: number, b: number): void {
+  const inv = state.player.inventory;
+  if (a < 0 || b < 0 || a >= inv.length || b >= inv.length) return;
+  [inv[a], inv[b]] = [inv[b], inv[a]];
+}
+
+export function moveInventoryItemToSlot(fromIndex: number, toSlotIndex: number): void {
+  const inv = state.player.inventory;
+  if (
+    fromIndex < 0 || fromIndex >= inv.length ||
+    toSlotIndex < 0 || toSlotIndex >= inv.length ||
+    fromIndex === toSlotIndex
+  ) return;
+  [inv[fromIndex], inv[toSlotIndex]] = [inv[toSlotIndex], inv[fromIndex]];
+}
+
+export function isInventoryFull(): boolean {
+  return !state.player.inventory.includes(null);
 }
 
 export function equipItem(item: ItemInstance): ItemInstance | null {
@@ -581,9 +661,85 @@ export function resetState(): void {
     shopRefreshCost: 200,
     inventoryOpen: false,
     merchantOpen: false,
+    stashOpen: false,
+    codexOpen: false,
     selectedInventorySlot: -1,
   });
 }
+
+// --- Stash Helpers ---
+
+export function getActiveStashTab(): StashTab {
+  const stash = state.player.stash;
+  return stash.tabs[stash.activeTabIndex] ?? stash.tabs[0]!;
+}
+
+export function isStashTabFull(tabIndex: number): boolean {
+  const tab = state.player.stash.tabs[tabIndex];
+  if (!tab) return true;
+  return !tab.items.includes(null);
+}
+
+export function addToStash(item: ItemInstance, tabIndex?: number): boolean {
+  const idx = tabIndex ?? state.player.stash.activeTabIndex;
+  const tab = state.player.stash.tabs[idx];
+  if (!tab) return false;
+  const slot = tab.items.findIndex(s => s === null);
+  if (slot === -1) return false;
+  tab.items[slot] = item;
+  emit('stash:itemAdded');
+  emit('stash:changed');
+  return true;
+}
+
+export function removeFromStash(tabIndex: number, slotIndex: number): ItemInstance | null {
+  const tab = state.player.stash.tabs[tabIndex];
+  if (!tab) return null;
+  const item = tab.items[slotIndex] ?? null;
+  if (item) tab.items[slotIndex] = null;
+  if (item) emit('stash:changed');
+  return item;
+}
+
+export function moveStashItem(tabIndex: number, fromSlot: number, toSlot: number): void {
+  const tab = state.player.stash.tabs[tabIndex];
+  if (!tab || fromSlot === toSlot) return;
+  [tab.items[fromSlot], tab.items[toSlot]] = [tab.items[toSlot], tab.items[fromSlot]];
+  emit('stash:changed');
+}
+
+export function setActiveStashTab(index: number): void {
+  if (index < 0 || index >= state.player.stash.tabs.length) return;
+  state.player.stash.activeTabIndex = index;
+  emit('stash:tabChanged');
+}
+
+export function buyStashTab(): boolean {
+  const stash = state.player.stash;
+  if (stash.tabs.length >= STASH_MAX_TABS) return false;
+  const costIndex = stash.tabs.length - STASH_FREE_TABS;
+  const cost = STASH_TAB_COSTS[costIndex];
+  if (cost === undefined) return false;
+  if (!spendGold(cost)) return false;
+  stash.tabs.push(createDefaultStashTab(stash.tabs.length));
+  emit('stash:tabBought');
+  emit('stash:changed');
+  return true;
+}
+
+export function renameStashTab(index: number, name: string): void {
+  const tab = state.player.stash.tabs[index];
+  if (tab) tab.name = name;
+  if (tab) emit('stash:changed');
+}
+
+export function recolorStashTab(index: number, color: number): void {
+  const tab = state.player.stash.tabs[index];
+  if (tab) tab.color = color;
+  if (tab) emit('stash:changed');
+}
+
+export { createDefaultStash };
 
 // Re-export ProjectileInstance for convenience
 import type { ProjectileInstance } from './types';

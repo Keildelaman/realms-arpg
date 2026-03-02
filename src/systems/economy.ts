@@ -224,7 +224,14 @@ function onMonsterDied(data: {
   gold: number;
   isBoss: boolean;
 }): void {
-  grantGold(data.gold);
+  if (data.gold <= 0) return;
+  const player = getPlayer();
+  const ascensionMultiplier = 1 + player.ascensionLevel * 0.05;
+  const goldFindMultiplier  = 1 + player.goldFind;
+  const finalGold = Math.floor(data.gold * ascensionMultiplier * goldFindMultiplier);
+  if (finalGold > 0) {
+    emit('gold:dropped', { amount: finalGold, x: data.x, y: data.y });
+  }
 }
 
 // --- Lifecycle ---
@@ -233,6 +240,10 @@ export function init(): void {
   shopRefreshCount = 0;
 
   on('monster:died', onMonsterDied);
+  on('gold:collected', (data) => {
+    addGold(data.amount);
+    emit('economy:goldChanged', { amount: data.amount, total: getPlayer().gold });
+  });
 }
 
 export function update(_dt: number): void {
