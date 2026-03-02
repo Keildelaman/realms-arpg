@@ -149,6 +149,20 @@ export function applyStatus(
 ): boolean {
   const config = STATUS_CONFIG[type];
 
+  // Shield immunity + innate immunity (monsters only)
+  if (targetId !== 'player') {
+    const monster = getMonsterById(targetId);
+    if (!monster) return false;
+    if (monster.currentShield > 0) {
+      emit('statusEffect:immune', { targetId, type });
+      return false;
+    }
+    if (monster.statusImmunities.includes(type)) {
+      emit('statusEffect:immune', { targetId, type });
+      return false;
+    }
+  }
+
   // Freeze reapply cooldown check
   if (type === 'freeze') {
     const cooldown = freezeCooldowns.get(targetId);
@@ -394,8 +408,10 @@ function applyStatusDamageToMonster(
   const monster = getMonsterById(monsterId);
   if (!monster || monster.isDead) return;
 
-  // Status damage bypasses armor but not defense
-  const reduction = monster.defense / (monster.defense + DEFENSE_CONSTANT);
+  // Route by damage type: burn uses magicResist, bleed/poison use defense
+  const config = STATUS_CONFIG[statusType];
+  const resistStat = config.damageType === 'magic' ? monster.magicResist : monster.defense;
+  const reduction = resistStat / (resistStat + DEFENSE_CONSTANT);
   const finalDamage = Math.max(MIN_DAMAGE, Math.floor(damage * (1 - reduction)));
 
   monster.currentHP = Math.max(0, monster.currentHP - finalDamage);
@@ -538,6 +554,7 @@ export function init(): void {
   // Note: We don't subscribe to 'status:applied' to avoid recursion.
   // Instead, other systems call applyStatus() directly or via a request event.
   on('monster:died', onMonsterDied);
+  on('status:requestApply', onStatusRequestApply);
 }
 
 export function update(dt: number): void {

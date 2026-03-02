@@ -16,6 +16,7 @@ import {
   baseAttackAtLevel,
   baseDefenseAtLevel,
   baseMagicPowerAtLevel,
+  baseMagicResistAtLevel,
   ascensionBonus,
 } from '@/data/balance';
 
@@ -58,6 +59,8 @@ interface StatModifiers {
   flatStatusPotency: number;
   // Secondary equipment stats (additive accumulation)
   flatArmorPen: number;
+  flatMagicPen: number;
+  flatMagicResist: number;
   flatHpRegen: number;
   flatDodgeChance: number;
   flatDamageReduction: number;
@@ -77,6 +80,9 @@ interface StatModifiers {
   flatSkillMageLevel: number;
   flatSkillUtilityLevel: number;
   flatSkillAllLevel: number;
+  // Leech
+  flatLifeSteal: number;
+  flatSpellLeech: number;
 }
 
 const activeBuffs: Map<string, Buff> = new Map();
@@ -148,6 +154,7 @@ export function recalculateStats(): void {
   const baseAtk = baseAttackAtLevel(player.level);
   const baseDef = baseDefenseAtLevel(player.level);
   const baseMagic = baseMagicPowerAtLevel(player.level);
+  const baseMagicRes = baseMagicResistAtLevel(player.level);
   const baseCrit = BASE_CRIT_CHANCE;
   const baseCritDmg = BASE_CRIT_DAMAGE;
   const baseSpeed = BASE_MOVE_SPEED;
@@ -157,6 +164,7 @@ export function recalculateStats(): void {
   player.baseAttack = baseAtk;
   player.baseDefense = baseDef;
   player.baseMagicPower = baseMagic;
+  player.baseMagicResist = baseMagicRes;
   player.baseCritChance = baseCrit;
   player.baseCritDamage = baseCritDmg;
   player.baseMoveSpeed = baseSpeed;
@@ -256,12 +264,16 @@ export function recalculateStats(): void {
 
   // --- Secondary equipment stats (additive from equipment + buffs) ---
   player.armorPen       = Math.max(0, Math.min(0.9, equipFlat.flatArmorPen + buffMods.flatArmorPen));
+  player.magicPen       = Math.max(0, Math.min(0.9, equipFlat.flatMagicPen + buffMods.flatMagicPen));
+  player.magicResist    = Math.max(0, baseMagicRes + equipFlat.flatMagicResist + buffMods.flatMagicResist);
   player.hpRegen        = Math.max(0, equipFlat.flatHpRegen + buffMods.flatHpRegen);
   player.dodgeChance    = Math.max(0, Math.min(0.75, equipFlat.flatDodgeChance + buffMods.flatDodgeChance));
   player.damageReduction = Math.max(0, Math.min(0.75, equipFlat.flatDamageReduction + buffMods.flatDamageReduction));
   player.energyRegen    = Math.max(0, equipFlat.flatEnergyRegen + buffMods.flatEnergyRegen);
   player.goldFind       = Math.max(0, equipFlat.flatGoldFind + buffMods.flatGoldFind);
   player.xpBonus        = Math.max(0, equipFlat.flatXpBonus + buffMods.flatXpBonus);
+  player.lifeSteal      = Math.min(0.20, equipFlat.flatLifeSteal  + buffMods.flatLifeSteal);
+  player.spellLeech     = Math.min(0.20, equipFlat.flatSpellLeech + buffMods.flatSpellLeech);
 
   player.skillPowerBoost   = Math.max(0, equipFlat.flatSkillPowerBoost + buffMods.flatSkillPowerBoost);
   player.skillSpeedBoost   = Math.max(0, equipFlat.flatSkillSpeedBoost + buffMods.flatSkillSpeedBoost);
@@ -332,6 +344,8 @@ function accumulateItemModifiers(
 
     // --- Secondary stats ---
     else if (id === 'armor_penetration') flat.flatArmorPen += val;
+    else if (id === 'magic_pen') flat.flatMagicPen += val;
+    else if (id === 'flat_magic_resist') flat.flatMagicResist += val;
     else if (id === 'hp_regen') flat.flatHpRegen += val;
     else if (id === 'dodge_chance') flat.flatDodgeChance += val;
     else if (id === 'damage_reduction') flat.flatDamageReduction += val;
@@ -353,6 +367,8 @@ function accumulateItemModifiers(
     else if (id === 'skill_mage_level') flat.flatSkillMageLevel += val;
     else if (id === 'skill_utility_level') flat.flatSkillUtilityLevel += val;
     else if (id === 'skill_all_level') flat.flatSkillAllLevel += val;
+    else if (id === 'life_steal')  flat.flatLifeSteal  += val;
+    else if (id === 'spell_leech') flat.flatSpellLeech += val;
   }
 }
 
@@ -388,6 +404,8 @@ function sumBuffModifiers(): StatModifiers {
     if (s.flatFreezeChance) sum.flatFreezeChance += s.flatFreezeChance;
     if (s.flatStatusPotency) sum.flatStatusPotency += s.flatStatusPotency;
     if (s.flatArmorPen) sum.flatArmorPen += s.flatArmorPen;
+    if (s.flatMagicPen) sum.flatMagicPen += s.flatMagicPen;
+    if (s.flatMagicResist) sum.flatMagicResist += s.flatMagicResist;
     if (s.flatHpRegen) sum.flatHpRegen += s.flatHpRegen;
     if (s.flatDodgeChance) sum.flatDodgeChance += s.flatDodgeChance;
     if (s.flatDamageReduction) sum.flatDamageReduction += s.flatDamageReduction;
@@ -405,6 +423,8 @@ function sumBuffModifiers(): StatModifiers {
     if (s.flatSkillMageLevel) sum.flatSkillMageLevel += s.flatSkillMageLevel;
     if (s.flatSkillUtilityLevel) sum.flatSkillUtilityLevel += s.flatSkillUtilityLevel;
     if (s.flatSkillAllLevel) sum.flatSkillAllLevel += s.flatSkillAllLevel;
+    sum.flatLifeSteal  += (s.flatLifeSteal  ?? 0);
+    sum.flatSpellLeech += (s.flatSpellLeech ?? 0);
   }
 
   return sum;
@@ -435,6 +455,8 @@ function createEmptyModifiers(): StatModifiers {
     flatFreezeChance: 0,
     flatStatusPotency: 0,
     flatArmorPen: 0,
+    flatMagicPen: 0,
+    flatMagicResist: 0,
     flatHpRegen: 0,
     flatDodgeChance: 0,
     flatDamageReduction: 0,
@@ -452,6 +474,8 @@ function createEmptyModifiers(): StatModifiers {
     flatSkillMageLevel: 0,
     flatSkillUtilityLevel: 0,
     flatSkillAllLevel: 0,
+    flatLifeSteal: 0,
+    flatSpellLeech: 0,
   };
 }
 

@@ -2,7 +2,7 @@
 // Combat System — Damage calculation, spatial hit detection, attack processing
 // ============================================================================
 
-import type { DamageType, DamageResult } from '@/core/types';
+import type { DamageType, DamageResult, EnemyStateInstance, EnemyStateType } from '@/core/types';
 import { on, emit } from '@/core/event-bus';
 import {
   getState,
@@ -30,8 +30,10 @@ import {
   AFFIX_FROST_NOVA_RADIUS,
   AFFIX_FROST_NOVA_SLOW_DURATION,
   AFFIX_FROST_NOVA_DAMAGE_MULT,
+  SUNDERED_DEFENSE_REDUCTION,
+  CHARGED_MR_REDUCTION,
 } from '@/data/constants';
-import { calculateDamage, deathMilestoneLevel } from '@/data/balance';
+import { deathMilestoneLevel } from '@/data/balance';
 import { safeResolvePosition } from './expedition-generation';
 
 // --- Internal state ---
@@ -168,7 +170,21 @@ function resolveBasicAttackHits(angle: number): void {
     const monster = getMonsterById(monsterId);
     if (!monster || monster.isDead) continue;
 
-    damageMonster(monsterId, baseDmg, player.critChance, player.critDamage, 'physical');
+    const result = damageMonster(monsterId, baseDmg, player.critChance, player.critDamage, 'physical');
+    if (result && result.damage > 0) {
+      if (player.bleedChance > 0 && Math.random() < player.bleedChance) {
+        emit('status:requestApply', { targetId: monsterId, type: 'bleed', sourceAttack: player.attack, sourcePotency: player.statusPotency });
+      }
+      if (player.poisonChance > 0 && Math.random() < player.poisonChance) {
+        emit('status:requestApply', { targetId: monsterId, type: 'poison', sourceAttack: player.attack, sourcePotency: player.statusPotency });
+      }
+      if (player.slowChance > 0 && Math.random() < player.slowChance) {
+        emit('status:requestApply', { targetId: monsterId, type: 'slow', sourceAttack: player.attack, sourcePotency: player.statusPotency });
+      }
+      if (player.freezeChance > 0 && Math.random() < player.freezeChance) {
+        emit('status:requestApply', { targetId: monsterId, type: 'freeze', sourceAttack: player.attack, sourcePotency: player.statusPotency });
+      }
+    }
   }
 
   // If nothing was hit, emit a whiff
@@ -198,45 +214,72 @@ export function damageMonster(
   const monster = getMonsterById(monsterId);
   if (!monster || monster.isDead) return null;
 
-  // Armor flat reduction (armored monster type)
-  const armorReduction = monster.armor;
-
-  // Armor penetration: reduce effective defense by player's armorPen fraction
   const player = getPlayer();
-  const effectiveDefense = Math.max(0, monster.defense * (1 - player.armorPen));
 
-  // Calculate damage with crit, armor, and (penetrated) defense
-  const { damage: calculatedDamage, isCrit } = calculateDamage(
-    rawDamage,
-    effectiveDefense,
-    critChance,
-    critDmgMul,
-    armorReduction,
-  );
+  // --- Staggered: guaranteed crit ---
+  const isStaggered = monster.enemyStates?.some(s => s.type === 'staggered' && s.duration > 0) ?? false;
+  const isCrit = isStaggered || Math.random() < critChance;
+  let baseDmg = isCrit ? Math.floor(rawDamage * critDmgMul) : rawDamage;
 
-  let finalDamage = calculatedDamage;
+  // --- Type-routed defense reduction (with enemy state debuffs) ---
+  let finalDamage: number;
+  if (damageType === 'physical') {
+    // Sundered: -20% defense
+    const hasSundered = monster.enemyStates?.some(s => s.type === 'sundered' && s.duration > 0) ?? false;
+    const sunderedMult = hasSundered ? (1 - SUNDERED_DEFENSE_REDUCTION) : 1;
+    const effectiveDefense = Math.max(0, monster.defense * sunderedMult * (1 - player.armorPen));
+    const reduction = effectiveDefense / (effectiveDefense + DEFENSE_CONSTANT);
+    finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
+  } else {
+    // Charged: -20% magicResist per stack
+    const chargedStacks = monster.enemyStates
+      ?.filter(s => s.type === 'charged' && s.duration > 0)
+      .reduce((sum, s) => sum + s.stacks, 0) ?? 0;
+    const chargedMult = Math.max(0, 1 - chargedStacks * CHARGED_MR_REDUCTION);
+    const effectiveMR = Math.max(0, monster.magicResist * chargedMult * (1 - player.magicPen));
+    const reduction = effectiveMR / (effectiveMR + DEFENSE_CONSTANT);
+    finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
+  }
 
-  // Shield mechanics — shield absorbs damage first with reduction
+  // --- Shield: full 1:1 absorption ---
   if (monster.currentShield > 0) {
-    const shieldedDamage = Math.floor(finalDamage * (1 - monster.shieldDamageReduction));
-    const absorbedByShield = Math.min(monster.currentShield, shieldedDamage);
-    monster.currentShield -= absorbedByShield;
+    const absorbed = Math.min(monster.currentShield, finalDamage);
+    monster.currentShield -= absorbed;
+    const overflow = finalDamage - absorbed;
 
-    // Remaining damage passes through to HP
-    // Proportion of damage that got past the shield
-    const remainingRatio = shieldedDamage > 0
-      ? (shieldedDamage - absorbedByShield) / shieldedDamage
-      : 0;
-    finalDamage = Math.floor(finalDamage * remainingRatio);
-
-    // Shield broken event
     if (monster.currentShield <= 0) {
       monster.currentShield = 0;
       emit('monster:shieldBroken', { monsterId });
     }
+
+    if (overflow <= 0) {
+      // Fully absorbed — emit visual feedback, return 0 HP damage
+      const kbDx = monster.x - player.x;
+      const kbDy = monster.y - player.y;
+      const impactAngle = Math.atan2(kbDy, kbDx);
+      emit('combat:impact', {
+        x: monster.x,
+        y: monster.y,
+        angle: impactAngle,
+        damage: 0,
+        isCrit,
+        damageType,
+        targetId: monsterId,
+      });
+      emit('ui:damageNumber', {
+        x: monster.x,
+        y: monster.y,
+        amount: absorbed,
+        isCrit,
+        damageType,
+      });
+      return { damage: 0, isCrit, damageType, killed: false };
+    }
+
+    finalDamage = overflow;
   }
 
-  // Apply HP damage
+  // --- Apply HP damage ---
   finalDamage = Math.max(MIN_DAMAGE, finalDamage);
   monster.currentHP = Math.max(0, monster.currentHP - finalDamage);
 
@@ -266,6 +309,13 @@ export function damageMonster(
 
   // Track player stats
   player.totalDamageDealt += finalDamage;
+
+  // Life steal / spell leech
+  if (damageType === 'physical' && player.lifeSteal > 0) {
+    const healed = Math.max(1, Math.floor(finalDamage * player.lifeSteal));
+    player.currentHP = Math.min(player.maxHP, player.currentHP + healed);
+    emit('player:healed', { amount: healed, source: 'life_steal' });
+  }
 
   // Compute impact angle from player to monster
   const impactAngle = Math.atan2(kbDy, kbDx);
@@ -350,7 +400,7 @@ export function damageMonster(
  * @param amount - raw damage amount
  * @param source - identifier for the damage source (monster ID, 'status', etc.)
  */
-export function damagePlayer(amount: number, source: string): number {
+export function damagePlayer(amount: number, source: string, damageType: DamageType = 'physical'): number {
   const player = getPlayer();
 
   // Invulnerability check — dashing or recently hit
@@ -362,8 +412,9 @@ export function damagePlayer(amount: number, source: string): number {
     return 0;
   }
 
-  // Apply defense reduction
-  const reduction = player.defense / (player.defense + DEFENSE_CONSTANT);
+  // Type-split defense reduction
+  const resistStat = damageType === 'physical' ? player.defense : player.magicResist;
+  const reduction = resistStat / (resistStat + DEFENSE_CONSTANT);
   // Apply flat damage reduction from equipment (capped at 0.75 by player.ts)
   const finalDamage = Math.max(MIN_DAMAGE, Math.floor(amount * (1 - reduction) * (1 - player.damageReduction)));
 
@@ -383,7 +434,7 @@ export function damagePlayer(amount: number, source: string): number {
     y: player.y,
     amount: actualDamage,
     isCrit: false,
-    damageType: 'physical',
+    damageType,
   });
 
   // Check for player death
@@ -537,6 +588,110 @@ function checkMonsterProjectileHits(): void {
   }
 }
 
+/**
+ * Check player projectiles against monsters.
+ * Called each frame from update().
+ * combat.ts detects collision + emits events; skill-effects.ts handles damage + upgrade logic.
+ */
+function checkPlayerProjectileHits(): void {
+  const state = getState();
+
+  for (const proj of state.projectiles) {
+    if (proj.isExpired) continue;
+    if (proj.ownerId !== 'player') continue;
+
+    for (const monster of state.monsters) {
+      if (monster.isDead) continue;
+      if (proj.hitTargets.includes(monster.id)) continue;
+
+      const dx = proj.x - monster.x;
+      const dy = proj.y - monster.y;
+      const distSq = dx * dx + dy * dy;
+      const hitRadius = (monster.size / 2) + proj.size;
+
+      if (distSq <= hitRadius * hitRadius) {
+        proj.hitTargets.push(monster.id);
+
+        // Emit hit event — skill-effects.ts handles damage + state application
+        emit('projectile:hit', {
+          projectileId: proj.id,
+          targetId: monster.id,
+          x: monster.x,
+          y: monster.y,
+        });
+
+        if (proj.piercing) {
+          if (proj.piercingHitCount !== undefined) {
+            proj.piercingHitCount++;
+          }
+          // Continue checking other monsters
+        } else {
+          proj.isExpired = true;
+          emit('projectile:expired', { projectileId: proj.id });
+          break; // Stop checking for this projectile
+        }
+      }
+    }
+  }
+}
+
+// --- Enemy State Management ---
+
+/**
+ * Apply or refresh an enemy state on a monster.
+ * For stackable states (charged), increments stacks up to max.
+ * For non-stackable states (sundered, staggered), refreshes duration.
+ */
+export function applyEnemyState(
+  monsterId: string,
+  type: EnemyStateType,
+  duration: number,
+  maxStacks: number = 1,
+): void {
+  const monster = getMonsterById(monsterId);
+  if (!monster || monster.isDead) return;
+
+  if (!monster.enemyStates) monster.enemyStates = [];
+
+  const existing = monster.enemyStates.find(s => s.type === type);
+  if (existing) {
+    // Refresh duration and increment stacks
+    existing.duration = duration;
+    existing.stacks = Math.min(maxStacks, existing.stacks + 1);
+  } else {
+    monster.enemyStates.push({ type, stacks: 1, duration });
+  }
+
+  emit('enemyState:applied', {
+    monsterId,
+    type,
+    stacks: existing ? existing.stacks : 1,
+    duration,
+  });
+}
+
+/**
+ * Tick all enemy states on all alive monsters. Called from update().
+ */
+function tickEnemyStates(dt: number): void {
+  const state = getState();
+
+  for (const monster of state.monsters) {
+    if (monster.isDead || !monster.enemyStates) continue;
+
+    for (let i = monster.enemyStates.length - 1; i >= 0; i--) {
+      const es = monster.enemyStates[i];
+      es.duration -= dt;
+
+      if (es.duration <= 0) {
+        const expiredType = es.type;
+        monster.enemyStates.splice(i, 1);
+        emit('enemyState:expired', { monsterId: monster.id, type: expiredType });
+      }
+    }
+  }
+}
+
 // --- Lifecycle ---
 
 export function init(): void {
@@ -602,6 +757,10 @@ export function update(dt: number): void {
     }
   }
 
-  // --- Check monster projectile hits ---
+  // --- Tick enemy states ---
+  tickEnemyStates(dt);
+
+  // --- Check projectile hits ---
   checkMonsterProjectileHits();
+  checkPlayerProjectileHits();
 }

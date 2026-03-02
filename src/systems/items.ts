@@ -111,7 +111,7 @@ export function equipItem(itemId: string): boolean {
   const player = getPlayer();
 
   // Find item in inventory
-  const item = player.inventory.find(i => i.id === itemId);
+  const item = player.inventory.find(i => i?.id === itemId);
   if (!item) return false;
 
   const slot = item.slot;
@@ -180,7 +180,7 @@ export function sellItem(itemId: string): number {
   const player = getPlayer();
 
   // Find and remove the item from inventory
-  const item = player.inventory.find(i => i.id === itemId);
+  const item = player.inventory.find(i => i?.id === itemId);
   if (!item) return 0;
 
   const goldValue = Math.floor(getItemValue(item) * SELL_PRICE_RATIO);

@@ -27,7 +27,6 @@ import {
   REGEN_RATE_DEFAULT,
   ARMOR_DEFAULT,
   SHIELD_PERCENT_DEFAULT,
-  SHIELD_DAMAGE_REDUCTION,
   RARE_MINION_SPAWN_RADIUS,
   MONSTER_WANDER_PAUSE_MIN,
   MONSTER_WANDER_PAUSE_MAX,
@@ -269,9 +268,10 @@ function createMonsterInstance(
     defense: def.defense + Math.floor((level - 1) * 0.5),
 
     armor: def.armor ?? 0,
+    magicResist: def.magicResist ?? 0,
     currentShield: shieldAmount,
     maxShield: shieldAmount,
-    shieldDamageReduction: def.shieldDamageReduction ?? 0,
+    statusImmunities: def.statusImmunities ? [...def.statusImmunities] : [],
 
     aiState: 'idle',
     aiTimer: 0,
@@ -327,6 +327,7 @@ function createMonsterInstance(
     fuseTimer: 0,
     isRetreating: false,
     shape: def.shape ?? 'square',
+    enemyStates: [],
   };
 
   // Roll rarity (unless forced to normal, e.g., for minions)

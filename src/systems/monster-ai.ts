@@ -133,6 +133,13 @@ export function updateMonster(
     transitionTo(monster, 'chase');
   }
 
+  // Stealth check: if player is stealthed, chasing/attacking monsters deaggro
+  const player = getPlayer();
+  if (player.isStealth && (monster.aiState === 'chase' || monster.aiState === 'attack')) {
+    transitionTo(monster, 'idle');
+    return;
+  }
+
   // Dispatch by archetype
   switch (monster.archetype) {
     case 'melee':
@@ -270,7 +277,8 @@ function updateRangedAI(
 
   // Idle → aggro
   if (monster.aiState === 'idle') {
-    if (distToPlayer <= monster.aggroRange) {
+    const ps = getPlayer();
+    if (distToPlayer <= monster.aggroRange && !ps.isStealth) {
       transitionTo(monster, 'chase');
     } else {
       updateIdle(monster, dt, playerX, playerY);
@@ -332,7 +340,8 @@ function updateCasterAI(
 
   // Idle → aggro
   if (monster.aiState === 'idle') {
-    if (distToPlayer <= monster.aggroRange) {
+    const ps = getPlayer();
+    if (distToPlayer <= monster.aggroRange && !ps.isStealth) {
       transitionTo(monster, 'chase');
     } else {
       updateIdle(monster, dt, playerX, playerY);
@@ -397,7 +406,8 @@ function updateChargerAI(
   // Idle → aggro
   if (monster.aiState === 'idle') {
     const distToPlayer = dist(monster.x, monster.y, playerX, playerY);
-    if (distToPlayer <= monster.aggroRange) {
+    const ps = getPlayer();
+    if (distToPlayer <= monster.aggroRange && !ps.isStealth) {
       transitionTo(monster, 'chase');
     } else {
       updateIdle(monster, dt, playerX, playerY);
@@ -587,7 +597,8 @@ function updateExploderAI(
   // Idle → aggro
   if (monster.aiState === 'idle') {
     const distToPlayer = dist(monster.x, monster.y, playerX, playerY);
-    if (distToPlayer <= monster.aggroRange) {
+    const ps = getPlayer();
+    if (distToPlayer <= monster.aggroRange && !ps.isStealth) {
       transitionTo(monster, 'chase');
     } else {
       updateIdle(monster, dt, playerX, playerY);
@@ -681,8 +692,9 @@ function updateIdle(
   playerY: number,
 ): void {
   const distToPlayer = dist(monster.x, monster.y, playerX, playerY);
+  const playerState = getPlayer();
 
-  if (distToPlayer <= monster.aggroRange) {
+  if (distToPlayer <= monster.aggroRange && !playerState.isStealth) {
     // Clear wander state on aggro
     monster.wanderTargetX = undefined;
     monster.wanderTargetY = undefined;

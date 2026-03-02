@@ -197,7 +197,6 @@ export function applyRarityScaling(
     const shieldAmount = Math.floor(instance.maxHP * 0.3);
     instance.currentShield = shieldAmount;
     instance.maxShield = shieldAmount;
-    instance.shieldDamageReduction = 0.5;
   }
 
   // Set affix instances
