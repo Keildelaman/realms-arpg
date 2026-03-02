@@ -3,11 +3,10 @@
 // ============================================================================
 //
 // Each active skill has an effect handler that creates hitboxes, projectiles,
-// buffs, or movement effects. This system listens to 'skill:used' and
-// dispatches to the appropriate handler based on skill mechanic and ID.
+// or movement effects. This system listens to 'skill:used' and dispatches
+// to the appropriate handler based on skill ID.
 //
-// Damage is calculated here but applied via combat events. This system
-// never imports combat.ts — it emits events that combat/monsters react to.
+// Also listens to 'resonance:release' for Ashburst/Overload AoE effects.
 // ============================================================================
 
 import type {
@@ -16,7 +15,8 @@ import type {
   DamageType,
   ProjectileInstance,
   MonsterInstance,
-  StatusEffectType,
+  EnemyStateType,
+  EnvironmentalZone,
 } from '@/core/types';
 import { on, emit } from '@/core/event-bus';
 import {
@@ -28,10 +28,35 @@ import {
   MIN_DAMAGE,
   DEFENSE_CONSTANT,
   DASH_SPEED,
-  DASH_DURATION,
   PLAYER_BODY_RADIUS,
+  ASHBURST_RADIUS,
+  ASHBURST_DAMAGE_MULT,
+  OVERLOAD_RADIUS,
+  OVERLOAD_DAMAGE_MULT,
+  RESONANCE_DUALITY_DAMAGE_BONUS,
+  WRATH_DAMAGE_BONUS,
+  SUNDERED_DURATION,
+  SUNDERED_DEFENSE_REDUCTION,
+  FLOW_STATE_RELEASE_DAMAGE_BONUS,
+  FLOW_STATE_RELEASE_RADIUS_BONUS,
+  CHARGED_DURATION,
+  CHARGED_MAX_STACKS,
+  STAGGERED_DURATION,
+  PRIMED_DAMAGE_BONUS,
+  CHAIN_REACTION_BASE_DETONATION_RADIUS,
+  CHAIN_REACTION_RADIUS_PER_HIT,
+  SHADOW_TRAIL_TICK_INTERVAL,
+  ASSASSIN_BEHIND_OFFSET,
+  KNOCKBACK_DISTANCE_BASE,
+  KNOCKBACK_CRIT_MULTIPLIER,
+  KNOCKBACK_TWEEN_DURATION,
+  AFTERSHOCK_ZONE_RADIUS,
+  AFTERSHOCK_ZONE_DURATION,
+  AFTERSHOCK_ZONE_TICK_INTERVAL,
+  AFTERSHOCK_ZONE_DAMAGE_PERCENT,
 } from '@/data/constants';
 import { SKILLS } from '@/data/skills.data';
+import { getUpgradeFlags } from '@/systems/skills';
 import { safeResolvePosition, resolveMovementAgainstMap } from './expedition-generation';
 
 // --- Internal types ---
@@ -119,8 +144,8 @@ function getSkillCategoryBoost(skillId: string): number {
 
 /**
  * Calculate raw base damage for a skill hit.
- * baseDamage = skill.levels[effectiveLevel-1].damage * (physical ? player.attack : player.magicPower)
- * Multiplied by (1 + skill category boost).
+ * damage = skill.levels[lvl].damage * (physical ? player.attack : player.magicPower)
+ * Multiplied by (1 + category boost).
  */
 function calculateSkillBaseDamage(skillId: string): number {
   const def = getSkillDef(skillId);
@@ -136,6 +161,49 @@ function calculateSkillBaseDamage(skillId: string): number {
 }
 
 /**
+ * Compute the multiplicative damage bonus from player combat states.
+ * Stacking: primed x wrath x duality (all multiplicative).
+ */
+function computePlayerStateMultiplier(): number {
+  const player = getPlayer();
+  let mult = 1.0;
+  if (player.combatStates.primed) mult *= player.combatStates.primedMultiplier;
+  if (player.combatStates.wrath) mult *= (1 + WRATH_DAMAGE_BONUS + player.combatStates.wrathBonusExtra);
+  if (player.resonance.dualityActive) mult *= (1 + RESONANCE_DUALITY_DAMAGE_BONUS);
+  return mult;
+}
+
+/**
+ * Apply or refresh an enemy state on a monster (local helper — no system imports).
+ */
+function applyEnemyStateLocal(
+  monsterId: string,
+  type: EnemyStateType,
+  duration: number,
+  maxStacks: number = 1,
+): void {
+  const monster = getMonsterById(monsterId);
+  if (!monster || monster.isDead) return;
+
+  if (!monster.enemyStates) monster.enemyStates = [];
+
+  const existing = monster.enemyStates.find(s => s.type === type);
+  if (existing) {
+    existing.duration = duration;
+    existing.stacks = Math.min(maxStacks, existing.stacks + 1);
+  } else {
+    monster.enemyStates.push({ type, stacks: 1, duration });
+  }
+
+  emit('enemyState:applied', {
+    monsterId,
+    type,
+    stacks: existing ? existing.stacks : 1,
+    duration,
+  });
+}
+
+/**
  * Apply damage to a monster via combat events.
  * Handles crit calculation and damage reduction.
  * Returns the final damage dealt.
@@ -145,44 +213,71 @@ function applyDamageToMonster(
   rawDamage: number,
   damageType: DamageType,
   bonusMultiplier: number = 1.0,
+  options?: { source?: string; physDefenseMultOverride?: number },
 ): number {
   const monster = getMonsterById(monsterId);
   if (!monster || monster.isDead) return 0;
 
   const player = getPlayer();
 
-  // Apply bonus multiplier (from overcharge, execution bonus, etc.)
-  let baseDmg = Math.floor(rawDamage * bonusMultiplier);
+  // Apply bonus multiplier + player state multiplier
+  const stateMultiplier = computePlayerStateMultiplier();
+  let baseDmg = Math.floor(rawDamage * bonusMultiplier * stateMultiplier);
 
-  // Crit calculation
-  const isCrit = Math.random() < player.critChance;
+  // Staggered: guaranteed crit
+  const isStaggered = monster.enemyStates?.some(s => s.type === 'staggered' && s.duration > 0) ?? false;
+  const isCrit = isStaggered || Math.random() < player.critChance;
   if (isCrit) {
     baseDmg = Math.floor(baseDmg * player.critDamage);
   }
 
-  // Armor flat reduction
-  baseDmg = Math.max(0, baseDmg - monster.armor);
+  // Type-routed defense reduction (with enemy state debuffs)
+  let finalDamage: number;
+  if (damageType === 'physical') {
+    let sunderedMult: number;
+    if (options?.physDefenseMultOverride != null) {
+      sunderedMult = options.physDefenseMultOverride;
+    } else {
+      const hasSundered = monster.enemyStates?.some(s => s.type === 'sundered' && s.duration > 0) ?? false;
+      sunderedMult = hasSundered ? (1 - SUNDERED_DEFENSE_REDUCTION) : 1;
+    }
+    const effectiveDefense = Math.max(0, monster.defense * sunderedMult * (1 - player.armorPen));
+    const reduction = effectiveDefense / (effectiveDefense + DEFENSE_CONSTANT);
+    finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
+  } else {
+    const chargedStacks = monster.enemyStates
+      ?.filter(s => s.type === 'charged' && s.duration > 0)
+      .reduce((sum, s) => sum + s.stacks, 0) ?? 0;
+    const chargedMult = Math.max(0, 1 - chargedStacks * 0.20);
+    const effectiveMR = Math.max(0, monster.magicResist * chargedMult * (1 - player.magicPen));
+    const reduction = effectiveMR / (effectiveMR + DEFENSE_CONSTANT);
+    finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
+  }
 
-  // Defense % reduction (armor penetration reduces effective defense)
-  const effectiveDefense = Math.max(0, monster.defense * (1 - player.armorPen));
-  const reduction = effectiveDefense / (effectiveDefense + DEFENSE_CONSTANT);
-  let finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
-
-  // Shield mechanics
+  // Shield: full 1:1 absorption
   if (monster.currentShield > 0) {
-    const shieldedDamage = Math.floor(finalDamage * (1 - monster.shieldDamageReduction));
-    const absorbedByShield = Math.min(monster.currentShield, shieldedDamage);
-    monster.currentShield -= absorbedByShield;
-
-    const remainingRatio = shieldedDamage > 0
-      ? (shieldedDamage - absorbedByShield) / shieldedDamage
-      : 0;
-    finalDamage = Math.floor(finalDamage * remainingRatio);
+    const absorbed = Math.min(monster.currentShield, finalDamage);
+    monster.currentShield -= absorbed;
+    const overflow = finalDamage - absorbed;
 
     if (monster.currentShield <= 0) {
       monster.currentShield = 0;
       emit('monster:shieldBroken', { monsterId });
     }
+
+    if (overflow <= 0) {
+      // Fully absorbed
+      emit('ui:damageNumber', {
+        x: monster.x,
+        y: monster.y,
+        amount: absorbed,
+        isCrit,
+        damageType,
+      });
+      return 0;
+    }
+
+    finalDamage = overflow;
   }
 
   // Apply HP damage
@@ -192,6 +287,18 @@ function applyDamageToMonster(
   // Track player stats
   player.totalDamageDealt += finalDamage;
 
+  // Life steal / spell leech
+  if (damageType === 'physical' && player.lifeSteal > 0) {
+    const healed = Math.max(1, Math.floor(finalDamage * player.lifeSteal));
+    player.currentHP = Math.min(player.maxHP, player.currentHP + healed);
+    emit('player:healed', { amount: healed, source: 'life_steal' });
+  }
+  if (damageType === 'magic' && player.spellLeech > 0) {
+    const healed = Math.max(1, Math.floor(finalDamage * player.spellLeech));
+    player.currentHP = Math.min(player.maxHP, player.currentHP + healed);
+    emit('player:healed', { amount: healed, source: 'spell_leech' });
+  }
+
   // Emit events
   emit('combat:damageDealt', {
     targetId: monsterId,
@@ -200,6 +307,7 @@ function applyDamageToMonster(
     damageType,
     x: monster.x,
     y: monster.y,
+    source: options?.source,
   });
 
   emit('monster:damaged', {
@@ -216,6 +324,54 @@ function applyDamageToMonster(
     isCrit,
     damageType,
   });
+
+  // Impact VFX + knockback for skill/resonance hits
+  const impactAngle = Math.atan2(monster.y - player.y, monster.x - player.x);
+  emit('combat:impact', {
+    x: monster.x,
+    y: monster.y,
+    angle: impactAngle,
+    damage: finalDamage,
+    isCrit,
+    damageType,
+    targetId: monsterId,
+    source: options?.source,
+  });
+
+  if (finalDamage > 0 && !monster.isDead) {
+    const knockDist = isCrit
+      ? KNOCKBACK_DISTANCE_BASE * KNOCKBACK_CRIT_MULTIPLIER
+      : KNOCKBACK_DISTANCE_BASE;
+    const kbDist = Math.sqrt(
+      (monster.x - player.x) ** 2 + (monster.y - player.y) ** 2,
+    );
+    if (kbDist > 0) {
+      let toX = monster.x + Math.cos(impactAngle) * knockDist;
+      let toY = monster.y + Math.sin(impactAngle) * knockDist;
+      // Wall-aware knockback in expeditions
+      const state = getState();
+      if (state.activeExpedition) {
+        const resolved = safeResolvePosition(
+          state.activeExpedition.map,
+          monster.x, monster.y,
+          toX, toY,
+          Math.max(10, monster.size * 0.35),
+        );
+        toX = resolved.x;
+        toY = resolved.y;
+      }
+      monster.x = toX;
+      monster.y = toY;
+      emit('combat:knockback', {
+        targetId: monsterId,
+        fromX: player.x,
+        fromY: player.y,
+        toX,
+        toY,
+        duration: KNOCKBACK_TWEEN_DURATION,
+      });
+    }
+  }
 
   // Check death
   if (monster.currentHP <= 0) {
@@ -299,6 +455,67 @@ function findMonstersInCircle(
   return hits;
 }
 
+// ==========================================================================
+// ENVIRONMENTAL ZONES
+// ==========================================================================
+
+/**
+ * Create an Aftershock Zone at a world position. Exported for future Ground Slam to call.
+ * Deals periodic physical damage and applies Sundered + Slow to enemies inside.
+ */
+export function createAftershockZone(x: number, y: number): void {
+  const player = getPlayer();
+  const zone: EnvironmentalZone = {
+    id: `aftershock_${Date.now()}_${Math.random()}`,
+    type: 'aftershock',
+    x, y,
+    radius: AFTERSHOCK_ZONE_RADIUS,
+    duration: AFTERSHOCK_ZONE_DURATION,
+    elapsed: 0,
+    tickTimer: 0, // tick immediately on creation
+    damagePerTick: Math.floor(player.attack * AFTERSHOCK_ZONE_DAMAGE_PERCENT),
+    damageType: 'physical',
+  };
+  activeEnvironmentalZones.push(zone);
+  emit('environment:zoneCreated', {
+    id: zone.id, type: zone.type,
+    x: zone.x, y: zone.y,
+    radius: zone.radius, duration: zone.duration,
+  });
+}
+
+function updateEnvironmentalZones(dt: number): void {
+  for (let i = activeEnvironmentalZones.length - 1; i >= 0; i--) {
+    const zone = activeEnvironmentalZones[i];
+    zone.elapsed += dt;
+
+    if (zone.elapsed >= zone.duration) {
+      activeEnvironmentalZones.splice(i, 1);
+      emit('environment:zoneExpired', { id: zone.id });
+      continue;
+    }
+
+    zone.tickTimer -= dt;
+    if (zone.tickTimer <= 0) {
+      zone.tickTimer += AFTERSHOCK_ZONE_TICK_INTERVAL;
+
+      const monsters = findMonstersInCircle(zone.x, zone.y, zone.radius);
+      for (const monster of monsters) {
+        applyDamageToMonster(monster.id, zone.damagePerTick, zone.damageType, 1.0, { source: 'environment' });
+        // Aftershock: apply Sundered while inside
+        applyEnemyStateLocal(monster.id, 'sundered', 1.0, 1);
+        // Aftershock: apply slow
+        emit('status:requestApply', {
+          targetId: monster.id,
+          type: 'slow',
+          sourceAttack: 0,
+          sourcePotency: 1.0,
+        });
+      }
+    }
+  }
+}
+
 /**
  * Find the nearest alive monster to a point within a given range.
  */
@@ -330,121 +547,283 @@ function findNearestMonster(
   return nearest;
 }
 
-/**
- * Apply status effect from a skill hit, checking the skill's statusChance.
- */
-function tryApplySkillStatus(
-  skillId: string,
-  targetId: string,
-): void {
-  const def = getSkillDef(skillId);
-  if (!def || !def.statusEffect) return;
-
-  const levelData = getSkillLevelData(skillId);
-  if (!levelData) return;
-
-  const statusChance = levelData.statusChance ?? 0;
-  if (Math.random() >= statusChance) return;
-
-  const player = getPlayer();
-
-  emit('status:applied', {
-    targetId,
-    type: def.statusEffect,
-    stacks: 1,
-  });
-}
-
 // ==========================================================================
-// MELEE SKILL HANDLERS
+// SKILL HANDLERS (3 active skills)
 // ==========================================================================
+
+// --- Heavy Slash: melee arc — dispatcher routes to base or upgrade variant ---
 
 function handleHeavySlash(data: SkillUsedData): void {
+  const flags = getUpgradeFlags('heavy_slash');
+
+  if (flags.sunderStacks) {
+    handleHeavySlashSunbreaker(data, flags);
+  } else if (flags.execute50Bonus !== undefined) {
+    handleHeavySlashExecutioner(data, flags);
+  } else if (flags.bleedStacks) {
+    handleHeavySlashRavager(data, flags);
+  } else {
+    handleHeavySlashBase(data);
+  }
+}
+
+// --- Base Heavy Slash (no upgrade): 100° arc, 56px range, Sundered, 1 Ash ---
+
+function handleHeavySlashBase(data: SkillUsedData): void {
   const baseDamage = calculateSkillBaseDamage(data.skillId);
   const hits = findMonstersInArc(data.x, data.y, data.angle, 100, 56);
 
   for (const monster of hits) {
     applyDamageToMonster(monster.id, baseDamage, 'physical');
-    tryApplySkillStatus(data.skillId, monster.id);
+    applyEnemyStateLocal(monster.id, 'sundered', SUNDERED_DURATION, 1);
+  }
+
+  emit('resonance:requestCharge', { type: 'ash', amount: 1 });
+}
+
+// --- Path A: Ravager — wide arc, Bleed stacks, no Sundered ---
+
+function handleHeavySlashRavager(
+  data: SkillUsedData,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const arcWidth = (flags.arcWidth as number) ?? 180;
+  const range = (flags.range as number) ?? 90;
+  const bleedStacks = (flags.bleedStacks as number) ?? 2;
+
+  const baseDamage = calculateSkillBaseDamage('heavy_slash');
+  const hits = findMonstersInArc(data.x, data.y, data.angle, arcWidth, range);
+  const player = getPlayer();
+
+  for (const monster of hits) {
+    applyDamageToMonster(monster.id, baseDamage, 'physical');
+
+    // Apply Bleed stacks (no Sundered — removeSundered flag)
+    for (let i = 0; i < bleedStacks; i++) {
+      emit('status:requestApply', {
+        targetId: monster.id,
+        type: 'bleed',
+        sourceAttack: player.attack,
+        sourcePotency: player.statusPotency,
+      });
+    }
+  }
+
+  emit('resonance:requestCharge', { type: 'ash', amount: 1 });
+
+  // Tier 2 — Hemorrhage: delayed second hit
+  if (flags.doubleHit) {
+    const secondHitDamageMult = (flags.secondHitDamageMult as number) ?? 0.60;
+    const secondHitDelay = (flags.secondHitDelay as number) ?? 0.2;
+    const secondDamage = Math.floor(baseDamage * secondHitDamageMult);
+
+    let secondHitAshEmitted = false;
+    delayedHits.push({
+      remaining: secondHitDelay,
+      targets: hits.map(m => m.id),
+      damage: secondDamage,
+      damageType: 'physical',
+      bonusMultiplier: 1.0,
+      source: 'skill',
+      onResolve: (monsterId: string) => {
+        // Second hit also applies Bleed stacks
+        for (let i = 0; i < bleedStacks; i++) {
+          emit('status:requestApply', {
+            targetId: monsterId,
+            type: 'bleed',
+            sourceAttack: player.attack,
+            sourcePotency: player.statusPotency,
+          });
+        }
+        // Second hit generates +1 Ash (once, not per target)
+        if (!secondHitAshEmitted) {
+          secondHitAshEmitted = true;
+          emit('resonance:requestCharge', { type: 'ash', amount: 1 });
+        }
+      },
+    });
+  }
+
+  // Cast move speed bonus (brief boost during swing)
+  if (flags.castMoveSpeedBonus) {
+    const bonus = flags.castMoveSpeedBonus as number;
+    player.moveSpeed *= (1 + bonus);
+    scheduleBuffExpiry('heavy_slash_moveboost', 0.3, () => {
+      player.moveSpeed /= (1 + bonus);
+    });
   }
 }
 
-function handleExecutionStrike(data: SkillUsedData): void {
-  const baseDamage = calculateSkillBaseDamage(data.skillId);
-  const hits = findMonstersInArc(data.x, data.y, data.angle, 60, 64);
+// --- Path B: Executioner — execute damage, extended Sundered, crit bonus ---
+
+function handleHeavySlashExecutioner(
+  data: SkillUsedData,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const execute50Bonus = (flags.execute50Bonus as number) ?? 0.30;
+  const execute25Bonus = (flags.execute25Bonus as number) ?? 0.60;
+  const critBonus = (flags.critBonus as number) ?? 0.08;
+  const sunderedDuration = (flags.sunderedDuration as number) ?? 10;
+
+  const baseDamage = calculateSkillBaseDamage('heavy_slash');
+  const hits = findMonstersInArc(data.x, data.y, data.angle, 100, 56);
+  const player = getPlayer();
+
+  // Snapshot sundered status BEFORE damage loop (for Coup de Grâce)
+  const wasSunderedMap = new Map<string, boolean>();
+  for (const monster of hits) {
+    const hasSundered = monster.enemyStates?.some(s => s.type === 'sundered' && s.duration > 0) ?? false;
+    wasSunderedMap.set(monster.id, hasSundered);
+  }
+
+  // Temporarily boost crit chance
+  player.critChance += critBonus;
 
   for (const monster of hits) {
-    // +50% damage if target is below 30% HP
+    // Execute damage bonus based on HP ratio
     const hpRatio = monster.currentHP / monster.maxHP;
-    const bonusMult = hpRatio < 0.3 ? 1.5 : 1.0;
-
-    applyDamageToMonster(monster.id, baseDamage, 'physical', bonusMult);
-    tryApplySkillStatus(data.skillId, monster.id);
-  }
-}
-
-function handleGroundSlam(data: SkillUsedData): void {
-  const baseDamage = calculateSkillBaseDamage(data.skillId);
-  const hits = findMonstersInCircle(data.x, data.y, 80);
-
-  for (const monster of hits) {
-    applyDamageToMonster(monster.id, baseDamage, 'physical');
-
-    // Reduce target armor by 30% for 3s
-    // We emit a status-like event; the scene/entity layer can handle the debuff visual
-    const originalArmor = monster.armor;
-    const armorReduction = Math.floor(originalArmor * 0.3);
-    monster.armor -= armorReduction;
-
-    // Schedule armor restoration via a timer tracked internally
-    scheduleArmorRestore(monster.id, armorReduction, 3.0);
-
-    tryApplySkillStatus(data.skillId, monster.id);
-  }
-}
-
-function handleShieldBash(data: SkillUsedData): void {
-  const baseDamage = calculateSkillBaseDamage(data.skillId);
-  const hits = findMonstersInArc(data.x, data.y, data.angle, 90, 48);
-
-  for (const monster of hits) {
-    applyDamageToMonster(monster.id, baseDamage, 'physical');
-
-    // Knockback: push target away from player
-    const dx = monster.x - data.x;
-    const dy = monster.y - data.y;
-    const kbDist = Math.sqrt(dx * dx + dy * dy);
-    if (kbDist > 0) {
-      const knockbackDist = 60;
-      const kbTargetX = monster.x + (dx / kbDist) * knockbackDist;
-      const kbTargetY = monster.y + (dy / kbDist) * knockbackDist;
-      const state = getState();
-      if (state.activeExpedition) {
-        const resolved = safeResolvePosition(
-          state.activeExpedition.map, monster.x, monster.y,
-          kbTargetX, kbTargetY, Math.max(10, monster.size * 0.35),
-        );
-        monster.x = resolved.x;
-        monster.y = resolved.y;
-      } else {
-        monster.x = kbTargetX;
-        monster.y = kbTargetY;
-      }
+    let executeMult = 1.0;
+    if (hpRatio < 0.25) {
+      executeMult += execute25Bonus;
+    } else if (hpRatio < 0.50) {
+      executeMult += execute50Bonus;
     }
 
-    // 1s stun: set monster AI to stunned
-    monster.aiState = 'stunned';
-    monster.aiTimer = 1.0;
+    applyDamageToMonster(monster.id, baseDamage, 'physical', executeMult);
 
-    tryApplySkillStatus(data.skillId, monster.id);
+    // Apply Sundered with extended duration
+    if (!monster.isDead) {
+      applyEnemyStateLocal(monster.id, 'sundered', sunderedDuration, 1);
+    }
+  }
+
+  // Restore crit chance
+  player.critChance -= critBonus;
+
+  // Tier 2 — Coup de Grâce: killing blow triggers AoE burst
+  if (flags.executionBurst) {
+    const burstRadius = (flags.burstRadius as number) ?? 60;
+    const burstDamageMult = (flags.burstDamageMult as number) ?? 1.0;
+    const burstAshCharges = (flags.burstAshCharges as number) ?? 2;
+    const sunderedBurstRadiusMult = (flags.sunderedBurstRadiusMult as number) ?? 1.5;
+
+    for (const monster of hits) {
+      if (monster.isDead && monster.currentHP <= 0) {
+        const wasSundered = wasSunderedMap.get(monster.id) ?? false;
+        const effectiveRadius = wasSundered ? burstRadius * sunderedBurstRadiusMult : burstRadius;
+        const burstDamage = Math.floor(player.attack * burstDamageMult);
+
+        const burstHits = findMonstersInCircle(monster.x, monster.y, effectiveRadius);
+        for (const burstTarget of burstHits) {
+          if (burstTarget.id === monster.id) continue; // skip the dead monster
+          applyDamageToMonster(burstTarget.id, burstDamage, 'physical', 1.0, { source: 'skill' });
+        }
+
+        emit('resonance:requestCharge', { type: 'ash', amount: burstAshCharges });
+      }
+    }
+  }
+
+  emit('resonance:requestCharge', { type: 'ash', amount: 1 });
+}
+
+// --- Path C: Sunbreaker — graduated Sunder Stacks, detonation at max ---
+
+function handleHeavySlashSunbreaker(
+  data: SkillUsedData,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const maxSunderStacks = (flags.maxSunderStacks as number) ?? 3;
+  const detonationRadius = (flags.detonationRadius as number) ?? 70;
+  const detonationDamageMult = (flags.detonationDamageMult as number) ?? 0.6;
+
+  const baseDamage = calculateSkillBaseDamage('heavy_slash');
+  const hits = findMonstersInArc(data.x, data.y, data.angle, 100, 56);
+  const player = getPlayer();
+
+  for (const monster of hits) {
+    // Check current sunder stacks BEFORE incrementing
+    const sunderedState = monster.enemyStates?.find(s => s.type === 'sundered');
+    const currentStacks = sunderedState?.stacks ?? 0;
+    const wasFullySundered = currentStacks >= maxSunderStacks;
+
+    if (wasFullySundered) {
+      // --- Sundered Detonation: clear stacks, AoE at monster position ---
+      // Clear sunder stacks on the triggering monster
+      if (sunderedState) {
+        sunderedState.stacks = 0;
+        sunderedState.duration = 0;
+      }
+      emit('enemyState:expired', { monsterId: monster.id, type: 'sundered' });
+
+      // Deal base damage to triggering monster (no defense reduction from cleared sunder)
+      applyDamageToMonster(monster.id, baseDamage, 'physical');
+
+      // AoE detonation
+      let radius = detonationRadius;
+      let detonationDamage = Math.floor(player.attack * detonationDamageMult);
+
+      // Tier 2 — Cataclysm: radius scales with Ash charges, apply sunder to hit targets
+      if (flags.chainDetonation) {
+        const ashScaling = (flags.detonationAshScaling as number) ?? 0.30;
+        const ashCap = (flags.detonationAshCap as number) ?? 5;
+        const ashCharges = Math.min(player.resonance.ash, ashCap);
+        radius *= (1 + ashCharges * ashScaling);
+
+        // Consume all Ash charges
+        if (player.resonance.ash > 0) {
+          player.resonance.ash = 0;
+          emit('resonance:chargeLost', { type: 'ash', current: 0 });
+        }
+      }
+
+      const detonationHits = findMonstersInCircle(monster.x, monster.y, radius);
+      for (const target of detonationHits) {
+        if (target.id === monster.id) continue; // skip triggering monster
+        applyDamageToMonster(target.id, detonationDamage, 'physical', 1.0, { source: 'skill' });
+
+        // Cataclysm: apply 1 Sunder Stack to detonation targets
+        if (flags.chainDetonation && !target.isDead) {
+          applyEnemyStateLocal(target.id, 'sundered', SUNDERED_DURATION, maxSunderStacks);
+        }
+      }
+    } else {
+      // --- Normal hit: increment sunder stacks, deal damage with graduated reduction ---
+      // Apply/increment sunder stacks
+      applyEnemyStateLocal(monster.id, 'sundered', SUNDERED_DURATION, maxSunderStacks);
+
+      const newStacks = Math.min(currentStacks + 1, maxSunderStacks);
+      // Graduated defense mult: -10% per stack
+      const defMult = 1 - (newStacks * 0.10);
+
+      applyDamageToMonster(monster.id, baseDamage, 'physical', 1.0, {
+        physDefenseMultOverride: defMult,
+      });
+    }
+  }
+
+  emit('resonance:requestCharge', { type: 'ash', amount: 1 });
+}
+
+// --- Arcane Bolt: dispatcher routes to base or upgrade variant ---
+
+function handleArcaneBolt(data: SkillUsedData): void {
+  const flags = getUpgradeFlags('arcane_bolt');
+
+  if (flags.piercing) {
+    handleArcaneBoltUnstable(data, flags);
+  } else if (flags.doubleCharged) {
+    handleArcaneBoltOverload(data, flags);
+  } else if (flags.persistentHoming) {
+    handleArcaneBoltSeeker(data, flags);
+  } else {
+    handleArcaneBoltBase(data);
   }
 }
 
-// ==========================================================================
-// PROJECTILE SKILL HANDLERS
-// ==========================================================================
+// --- Base Arcane Bolt (no upgrade): homing projectile, 1 Charged, 1 Ember ---
 
-function handleArcaneBolt(data: SkillUsedData): void {
+function handleArcaneBoltBase(data: SkillUsedData): void {
   const baseDamage = calculateSkillBaseDamage(data.skillId);
   const def = getSkillDef(data.skillId);
   if (!def) return;
@@ -452,9 +831,6 @@ function handleArcaneBolt(data: SkillUsedData): void {
   const speed = def.projectileSpeed ?? 400;
   const vx = Math.cos(data.angle) * speed;
   const vy = Math.sin(data.angle) * speed;
-
-  // Find nearest monster for homing
-  const nearestTarget = findNearestMonster(data.x, data.y, 600);
 
   const projectile: ProjectileInstance = {
     id: generateProjectileId(),
@@ -480,51 +856,87 @@ function handleArcaneBolt(data: SkillUsedData): void {
 
   getState().projectiles.push(projectile);
   emit('projectile:spawned', { projectile });
+
+  // Generate 1 Ember charge
+  emit('resonance:requestCharge', { type: 'ember', amount: 1 });
 }
 
-function handleChainLightning(data: SkillUsedData): void {
-  const baseDamage = calculateSkillBaseDamage(data.skillId);
-  const def = getSkillDef(data.skillId);
+// --- Path A: Seeker — persistent homing, chain on impact ---
+
+function handleArcaneBoltSeeker(
+  data: SkillUsedData,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const baseDamage = calculateSkillBaseDamage('arcane_bolt');
+  const def = getSkillDef('arcane_bolt');
   if (!def) return;
 
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
+  const speed = def.projectileSpeed ?? 400;
+  const vx = Math.cos(data.angle) * speed;
+  const vy = Math.sin(data.angle) * speed;
 
-  // Bounces: 3-5 based on level
-  const bounces = levelData.bounces ?? 3;
+  // Seeker: base = 1 bounce; Thunderchain = flags.chainBounces (3)
+  const bounces = (flags.chainBounces as number) ?? 1;
 
-  // Find initial target — nearest monster in facing direction
-  const searchRange = 400;
-  let currentTarget = findNearestMonster(data.x, data.y, searchRange);
-  if (!currentTarget) return;
+  const projectile: ProjectileInstance = {
+    id: generateProjectileId(),
+    ownerId: 'player',
+    skillId: 'arcane_bolt',
+    x: data.x,
+    y: data.y,
+    velocityX: vx,
+    velocityY: vy,
+    speed,
+    damage: baseDamage,
+    damageType: 'magic',
+    piercing: false,
+    hitTargets: [],
+    bounces,
+    bounceRange: (flags.chainRange as number) ?? 200,
+    maxDistance: 600,
+    distanceTraveled: 0,
+    isExpired: false,
+    color: def.color,
+    size: 8,
+    persistentHoming: true,
+    statusEffect: def.statusEffect,
+    statusChance: getSkillLevelData('arcane_bolt')?.statusChance,
+  };
 
-  const hitIds: string[] = [];
-  let currentX = data.x;
-  let currentY = data.y;
+  getState().projectiles.push(projectile);
+  emit('projectile:spawned', { projectile });
 
-  // Apply damage to each bounce target
-  for (let i = 0; i <= bounces && currentTarget; i++) {
-    applyDamageToMonster(currentTarget.id, baseDamage, 'magic');
-    tryApplySkillStatus(data.skillId, currentTarget.id);
+  emit('resonance:requestCharge', { type: 'ember', amount: 1 });
+}
 
-    hitIds.push(currentTarget.id);
-    currentX = currentTarget.x;
-    currentY = currentTarget.y;
+// --- Path B: Overload — same projectile as base; all logic in onProjectileHit ---
 
-    // Find next target for bounce (excluding already hit)
-    const bounceRange = 200;
-    currentTarget = findNearestMonster(currentX, currentY, bounceRange, hitIds);
-  }
+function handleArcaneBoltOverload(
+  _data: SkillUsedData,
+  _flags: Record<string, number | boolean | string>,
+): void {
+  // Overload projectile is identical to base
+  handleArcaneBoltBase(_data);
+}
 
-  // Emit a projectile for the visual chain effect
-  const speed = def.projectileSpeed ?? 600;
+// --- Path C: Unstable Bolt — piercing, fast, explosion on 3rd pierce ---
+
+function handleArcaneBoltUnstable(
+  data: SkillUsedData,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const baseDamage = calculateSkillBaseDamage('arcane_bolt');
+  const def = getSkillDef('arcane_bolt');
+  if (!def) return;
+
+  const speed = (flags.speedOverride as number) ?? 600;
   const vx = Math.cos(data.angle) * speed;
   const vy = Math.sin(data.angle) * speed;
 
   const projectile: ProjectileInstance = {
     id: generateProjectileId(),
     ownerId: 'player',
-    skillId: data.skillId,
+    skillId: 'arcane_bolt',
     x: data.x,
     y: data.y,
     velocityX: vx,
@@ -533,335 +945,517 @@ function handleChainLightning(data: SkillUsedData): void {
     damage: baseDamage,
     damageType: 'magic',
     piercing: true,
-    hitTargets: hitIds,
-    bounces,
-    bounceRange: 200,
-    maxDistance: 600,
+    hitTargets: [],
+    maxDistance: 800,
     distanceTraveled: 0,
-    isExpired: true, // Already resolved damage; this is visual only
+    isExpired: false,
     color: def.color,
-    size: 6,
+    size: 8,
+    piercingHitCount: 0,
+    piercingDamageScale: 1.0,
+    hitSunderedTarget: false,
+    statusEffect: def.statusEffect,
+    statusChance: getSkillLevelData('arcane_bolt')?.statusChance,
   };
 
   getState().projectiles.push(projectile);
   emit('projectile:spawned', { projectile });
+
+  emit('resonance:requestCharge', { type: 'ember', amount: 1 });
 }
 
-function handleArrowBarrage(data: SkillUsedData): void {
-  const baseDamage = calculateSkillBaseDamage(data.skillId);
-  const def = getSkillDef(data.skillId);
-  if (!def) return;
-
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
-
-  // 5-8 projectiles based on level
-  const projectileCount = def.projectileCount ?? (levelData.hits ?? 5);
-  const coneAngle = 30 * (Math.PI / 180); // 30 degree cone total
-  const halfCone = coneAngle / 2;
-  const speed = def.projectileSpeed ?? 350;
-
-  // Per-projectile damage is reduced
-  const perProjectileDamage = Math.floor(baseDamage / Math.max(1, Math.floor(projectileCount * 0.6)));
-
-  for (let i = 0; i < projectileCount; i++) {
-    // Distribute projectiles evenly across the cone with slight randomness
-    const t = projectileCount > 1 ? i / (projectileCount - 1) : 0.5;
-    const spreadAngle = data.angle - halfCone + t * coneAngle;
-    const jitter = (Math.random() - 0.5) * 0.05; // small random jitter
-    const finalAngle = spreadAngle + jitter;
-
-    const vx = Math.cos(finalAngle) * speed;
-    const vy = Math.sin(finalAngle) * speed;
-
-    const projectile: ProjectileInstance = {
-      id: generateProjectileId(),
-      ownerId: 'player',
-      skillId: data.skillId,
-      x: data.x,
-      y: data.y,
-      velocityX: vx,
-      velocityY: vy,
-      speed,
-      damage: perProjectileDamage,
-      damageType: 'physical',
-      piercing: def.piercing ?? false,
-      hitTargets: [],
-      maxDistance: 500,
-      distanceTraveled: 0,
-      isExpired: false,
-      color: def.color,
-      size: 5,
-      statusEffect: def.statusEffect,
-      statusChance: getSkillLevelData(data.skillId)?.statusChance,
-    };
-
-    getState().projectiles.push(projectile);
-    emit('projectile:spawned', { projectile });
-  }
-}
-
-// ==========================================================================
-// AOE SKILL HANDLERS
-// ==========================================================================
-
-function handleChargedBurst(data: SkillUsedData): void {
-  const baseDamage = calculateSkillBaseDamage(data.skillId);
-  const def = getSkillDef(data.skillId);
-  if (!def) return;
-
-  // Get charge time from skill state (accumulated during channel)
-  const skillState = getState().skillStates[data.skillId];
-  const chargeTime = skillState ? skillState.chargeTime : 0;
-
-  // Radius scales with charge time: 100px at 0 charge, up to 160px at ~2s charge
-  const minRadius = 100;
-  const maxRadius = 160;
-  const chargeRatio = Math.min(1.0, chargeTime / 2.0);
-  const radius = minRadius + (maxRadius - minRadius) * chargeRatio;
-
-  // Damage scales with charge: 1.0x at 0 charge, up to 2.0x at full charge
-  const chargeDamageMultiplier = 1.0 + chargeRatio;
-
-  const hits = findMonstersInCircle(data.x, data.y, radius);
-
-  for (const monster of hits) {
-    // Split damage between physical and magic
-    const physDamage = Math.floor(baseDamage * 0.5 * chargeDamageMultiplier);
-    const magicDamage = Math.floor(baseDamage * 0.5 * chargeDamageMultiplier);
-
-    applyDamageToMonster(monster.id, physDamage, 'physical');
-    applyDamageToMonster(monster.id, magicDamage, 'magic');
-
-    tryApplySkillStatus(data.skillId, monster.id);
-  }
-}
-
-// ==========================================================================
-// BUFF SKILL HANDLERS
-// ==========================================================================
-
-function handleFlurry(data: SkillUsedData): void {
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
-
-  // +40-80% attack speed for 4-6s (scales with level)
-  const attackSpeedBonus = levelData.attackSpeedBonus ?? 0.4;
-  const duration = levelData.duration ?? 4;
-
-  const player = getPlayer();
-  player.attackSpeed *= (1 + attackSpeedBonus);
-
-  emit('skill:buffApplied', { skillId: data.skillId, duration });
-  emit('player:statsChanged');
-
-  // Schedule buff removal
-  scheduleBuffExpiry(data.skillId, duration, () => {
-    const p = getPlayer();
-    p.attackSpeed /= (1 + attackSpeedBonus);
-    emit('player:statsChanged');
-  });
-}
-
-function handleMomentum(data: SkillUsedData): void {
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
-
-  // Toggle: +25% move speed + 15% attack speed, costs energy/sec (handled by skills.ts)
-  const moveSpeedBonus = levelData.moveSpeedBonus ?? 0.25;
-  const attackSpeedBonus = levelData.attackSpeedBonus ?? 0.15;
-
-  const player = getPlayer();
-  player.moveSpeed *= (1 + moveSpeedBonus);
-  player.attackSpeed *= (1 + attackSpeedBonus);
-
-  emit('skill:buffApplied', {
-    skillId: data.skillId,
-    duration: -1, // -1 signals toggle (indefinite)
-  });
-  emit('player:statsChanged');
-}
-
-function handleMomentumDeactivate(skillId: string): void {
-  const levelData = getSkillLevelData(skillId);
-  if (!levelData) return;
-
-  const moveSpeedBonus = levelData.moveSpeedBonus ?? 0.25;
-  const attackSpeedBonus = levelData.attackSpeedBonus ?? 0.15;
-
-  const player = getPlayer();
-  player.moveSpeed /= (1 + moveSpeedBonus);
-  player.attackSpeed /= (1 + attackSpeedBonus);
-
-  emit('player:statsChanged');
-}
-
-function handleAdrenalineRush(data: SkillUsedData): void {
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
-
-  // +15-35% crit chance + 20% move speed for 5-7s
-  const critChanceBonus = levelData.critChanceBonus ?? 0.15;
-  const moveSpeedBonus = levelData.moveSpeedBonus ?? 0.2;
-  const duration = levelData.duration ?? 5;
-
-  const player = getPlayer();
-  player.critChance += critChanceBonus;
-  player.moveSpeed *= (1 + moveSpeedBonus);
-
-  emit('skill:buffApplied', { skillId: data.skillId, duration });
-  emit('player:statsChanged');
-
-  scheduleBuffExpiry(data.skillId, duration, () => {
-    const p = getPlayer();
-    p.critChance -= critChanceBonus;
-    p.moveSpeed /= (1 + moveSpeedBonus);
-    emit('player:statsChanged');
-  });
-}
-
-function handleOvercharge(data: SkillUsedData): void {
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
-
-  // Next skill deals +50-100% damage
-  const damageBonus = levelData.damageBonus ?? 0.5;
-
-  // Store the bonus to be consumed by the next skill activation
-  // The skill-effects system will check and consume this when calculating damage
-  // We emit an event so the skills system can track it
-  emit('skill:buffApplied', {
-    skillId: data.skillId,
-    duration: 10, // 10s or until next skill use
-  });
-
-  // Track overcharge bonus internally
-  overchargeBonusActive = true;
-  overchargeDamageMultiplier = 1 + damageBonus;
-
-  scheduleBuffExpiry(data.skillId, 10, () => {
-    overchargeBonusActive = false;
-    overchargeDamageMultiplier = 1.0;
-  });
-}
-
-// ==========================================================================
-// INSTANT SKILL HANDLERS
-// ==========================================================================
-
-function handleEnergySurge(data: SkillUsedData): void {
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
-
-  const player = getPlayer();
-
-  // Restore 30-50 energy instantly (encoded in damage field as a flat value)
-  // We use energyCost as a negative in the data or a custom field.
-  // For energy restoration, the amount is scaled by level.
-  // Level 1: 30, Level 5: 50 — we can interpolate from the levels array.
-  const restoreAmount = Math.floor(levelData.damage * 100);
-
-  const missing = player.maxEnergy - player.currentEnergy;
-  const actual = Math.min(missing, restoreAmount);
-  player.currentEnergy += actual;
-
-  emit('energy:changed', {
-    current: player.currentEnergy,
-    max: player.maxEnergy,
-  });
-
-  // Visual feedback
-  emit('ui:damageNumber', {
-    x: player.x,
-    y: player.y,
-    amount: actual,
-    isCrit: false,
-    damageType: 'magic',
-    isHeal: true,
-  });
-}
-
-function handleLifeTap(data: SkillUsedData): void {
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
-
-  const player = getPlayer();
-
-  // Spend 15% current HP
-  const hpCost = Math.floor(player.currentHP * 0.15);
-  player.currentHP -= hpCost;
-
-  emit('player:damaged', { amount: hpCost, source: 'life_tap' });
-
-  // Gain 25-40 energy (scales with level)
-  const energyGain = Math.floor(levelData.damage * 100);
-  const missing = player.maxEnergy - player.currentEnergy;
-  const actual = Math.min(missing, energyGain);
-  player.currentEnergy += actual;
-
-  emit('energy:changed', {
-    current: player.currentEnergy,
-    max: player.maxEnergy,
-  });
-
-  // Check player death from self-damage
-  if (player.currentHP <= 0) {
-    player.currentHP = 1; // Life tap cannot kill — floor at 1 HP
-  }
-}
-
-function handlePrecision(data: SkillUsedData): void {
-  const levelData = getSkillLevelData(data.skillId);
-  if (!levelData) return;
-
-  // Next 3-5 attacks are guaranteed crits
-  const guaranteedCrits = levelData.hits ?? 3;
-
-  precisionCritsRemaining = guaranteedCrits;
-
-  emit('skill:buffApplied', {
-    skillId: data.skillId,
-    duration: 15, // 15s timeout
-  });
-
-  scheduleBuffExpiry(data.skillId, 15, () => {
-    precisionCritsRemaining = 0;
-  });
-}
-
-// ==========================================================================
-// DASH SKILL HANDLER
-// ==========================================================================
+// --- Shadow Step: dispatcher routes to base or upgrade variant ---
 
 function handleShadowStep(data: SkillUsedData): void {
-  const player = getPlayer();
+  const flags = getUpgradeFlags('shadow_step');
 
-  // Move player rapidly in facing direction
+  if (flags.shadowTrail) {
+    handleShadowStepPhaseWalk(data, flags);
+  } else if (flags.dashDistance) {
+    handleShadowStepMomentum(data, flags);
+  } else if (flags.behindTarget) {
+    handleShadowStepAssassin(data, flags);
+  } else {
+    handleShadowStepBase(data);
+  }
+}
+
+// --- Base Shadow Step (no upgrade): dash 200px, 40px arrival AoE, Stagger, 1 Ash ---
+
+function handleShadowStepBase(data: SkillUsedData): void {
+  const player = getPlayer();
+  const def = getSkillDef('shadow_step');
+  const dashDistance = def?.range ?? 200;
+  const duration = dashDistance / DASH_SPEED;
+
   player.isDashing = true;
   player.isInvulnerable = true;
 
-  const dashDistance = DASH_SPEED * DASH_DURATION;
   const targetX = player.x + Math.cos(data.angle) * dashDistance;
   const targetY = player.y + Math.sin(data.angle) * dashDistance;
 
-  // Emit dash event for scene to animate the movement
-  emit('skill:buffApplied', {
-    skillId: data.skillId,
-    duration: DASH_DURATION,
+  emit('skill:buffApplied', { skillId: data.skillId, duration });
+
+  dashState = {
+    active: true, targetX, targetY,
+    startX: player.x, startY: player.y,
+    elapsed: 0, duration, skillId: data.skillId,
+    flags: {}, throughStaggerHits: [],
+  };
+}
+
+// --- Path A: Assassin — teleport behind nearest enemy, +crit bonus ---
+
+function handleShadowStepAssassin(
+  data: SkillUsedData,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const player = getPlayer();
+  const behindRange = (flags.behindRange as number) ?? 120;
+
+  // Find nearest alive monster within behindRange of cursor position
+  const target = findNearestMonster(data.x, data.y, behindRange);
+
+  let targetX: number;
+  let targetY: number;
+
+  if (target) {
+    // Compute behind-position: angle from player → enemy, then offset behind
+    const angle = Math.atan2(target.y - player.y, target.x - player.x);
+    targetX = target.x + Math.cos(angle) * ASSASSIN_BEHIND_OFFSET;
+    targetY = target.y + Math.sin(angle) * ASSASSIN_BEHIND_OFFSET;
+  } else {
+    // No target found — fall back to base directional dash
+    const def = getSkillDef('shadow_step');
+    const dashDistance = def?.range ?? 200;
+    targetX = player.x + Math.cos(data.angle) * dashDistance;
+    targetY = player.y + Math.sin(data.angle) * dashDistance;
+  }
+
+  const dx = targetX - player.x;
+  const dy = targetY - player.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const duration = Math.max(0.05, dist / DASH_SPEED);
+
+  player.isDashing = true;
+  player.isInvulnerable = true;
+
+  emit('skill:buffApplied', { skillId: data.skillId, duration });
+
+  dashState = {
+    active: true, targetX, targetY,
+    startX: player.x, startY: player.y,
+    elapsed: 0, duration, skillId: data.skillId,
+    flags, throughStaggerHits: [],
+  };
+}
+
+// --- Path B: Momentum Dash — longer dash, distance-scaling damage ---
+
+function handleShadowStepMomentum(
+  data: SkillUsedData,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const player = getPlayer();
+  const dashDistance = (flags.dashDistance as number) ?? 240;
+  const duration = dashDistance / DASH_SPEED;
+
+  player.isDashing = true;
+  player.isInvulnerable = true;
+
+  const targetX = player.x + Math.cos(data.angle) * dashDistance;
+  const targetY = player.y + Math.sin(data.angle) * dashDistance;
+
+  emit('skill:buffApplied', { skillId: data.skillId, duration });
+
+  dashState = {
+    active: true, targetX, targetY,
+    startX: player.x, startY: player.y,
+    elapsed: 0, duration, skillId: data.skillId,
+    flags, throughStaggerHits: [],
+  };
+}
+
+// --- Path C: Phase Walk — shadow trail + through-dash stagger ---
+
+function handleShadowStepPhaseWalk(
+  data: SkillUsedData,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const player = getPlayer();
+  const def = getSkillDef('shadow_step');
+  const dashDistance = def?.range ?? 200;
+  const duration = dashDistance / DASH_SPEED;
+
+  player.isDashing = true;
+  player.isInvulnerable = true;
+
+  const targetX = player.x + Math.cos(data.angle) * dashDistance;
+  const targetY = player.y + Math.sin(data.angle) * dashDistance;
+
+  emit('skill:buffApplied', { skillId: data.skillId, duration });
+
+  dashState = {
+    active: true, targetX, targetY,
+    startX: player.x, startY: player.y,
+    elapsed: 0, duration, skillId: data.skillId,
+    flags, throughStaggerHits: [],
+  };
+}
+
+// ==========================================================================
+// SHADOW STEP LANDING — upgrade-aware resolution
+// ==========================================================================
+
+function resolveShadowStepLanding(): void {
+  const player = getPlayer();
+  const flags = dashState.flags;
+
+  // 1. Calculate base arrival damage
+  let arrivalDamage = calculateSkillBaseDamage('shadow_step');
+
+  // 2. Apply arrivalDamageMult if set (Assassin: 0.8×)
+  if (typeof flags.arrivalDamageMult === 'number') {
+    arrivalDamage = Math.floor(arrivalDamage * flags.arrivalDamageMult);
+  }
+
+  // 3. Distance damage scaling (Momentum): bonus from distance traveled
+  if (typeof flags.distanceDamageScaling === 'number' && typeof flags.distanceDamageInterval === 'number') {
+    const dx = player.x - dashState.startX;
+    const dy = player.y - dashState.startY;
+    const actualDistance = Math.sqrt(dx * dx + dy * dy);
+    const intervals = Math.floor(actualDistance / (flags.distanceDamageInterval as number));
+    const bonus = intervals * (flags.distanceDamageScaling as number);
+    arrivalDamage = Math.floor(arrivalDamage * (1 + bonus));
+  }
+
+  // 4. Determine arrival radius and stagger duration
+  const arrivalRadius = (typeof flags.arrivalRadius === 'number') ? flags.arrivalRadius : 40;
+  const staggerDuration = (typeof flags.staggerDurationOverride === 'number')
+    ? flags.staggerDurationOverride : STAGGERED_DURATION;
+
+  // 5. Stealth crit bonus: temporarily boost crit for arrival damage
+  let critBoostApplied = false;
+  if (assassinCritBonusActive) {
+    player.critChance += assassinCritBonusAmount;
+    critBoostApplied = true;
+  }
+
+  // 6. Find monsters in arrival radius and apply damage + Stagger
+  const hits = findMonstersInCircle(player.x, player.y, arrivalRadius);
+  const knockbackDist = (typeof flags.knockbackDistance === 'number') ? flags.knockbackDistance : 0;
+
+  for (const monster of hits) {
+    applyDamageToMonster(monster.id, arrivalDamage, 'physical');
+
+    if (!monster.isDead) {
+      applyEnemyStateLocal(monster.id, 'staggered', staggerDuration, 1);
+    }
+
+    // Knockback (Momentum: 30px)
+    if (knockbackDist > 0 && !monster.isDead) {
+      applyKnockback(monster, player.x, player.y, knockbackDist);
+    }
+  }
+
+  // 7. Restore crit chance if boosted
+  if (critBoostApplied) {
+    player.critChance -= assassinCritBonusAmount;
+  }
+
+  // 8. Ash generation
+  if (typeof flags.ashPerHit === 'number') {
+    // Impact Wave: +N ash per enemy hit
+    for (const _monster of hits) {
+      emit('resonance:requestCharge', { type: 'ash', amount: flags.ashPerHit as number });
+    }
+  } else {
+    // Base: +1 Ash
+    emit('resonance:requestCharge', { type: 'ash', amount: 1 });
+  }
+
+  // 9. Post-landing effects
+
+  // Double pulse (Impact Wave tier 2)
+  if (flags.doublePulse) {
+    const secondPulseDelay = (flags.secondPulseDelay as number) ?? 0.3;
+    const secondPulseRadius = (flags.secondPulseRadius as number) ?? 100;
+    const secondPulseDamageMult = (flags.secondPulseDamageMult as number) ?? 0.50;
+    const secondPulseDamage = Math.floor(arrivalDamage * secondPulseDamageMult);
+    const landingX = player.x;
+    const landingY = player.y;
+    const ashPerHit = (typeof flags.ashPerHit === 'number') ? (flags.ashPerHit as number) : 1;
+
+    delayedHits.push({
+      remaining: secondPulseDelay,
+      targets: [],  // we'll find targets at resolution time
+      damage: secondPulseDamage,
+      damageType: 'physical',
+      bonusMultiplier: 1.0,
+      source: 'skill',
+      onResolve: () => {
+        // Find monsters at landing position (not current player pos)
+        const pulseHits = findMonstersInCircle(landingX, landingY, secondPulseRadius);
+        for (const m of pulseHits) {
+          applyDamageToMonster(m.id, secondPulseDamage, 'physical', 1.0, { source: 'skill' });
+          if (!m.isDead) {
+            applyEnemyStateLocal(m.id, 'staggered', STAGGERED_DURATION, 1);
+          }
+          emit('resonance:requestCharge', { type: 'ash', amount: ashPerHit });
+        }
+      },
+    });
+  }
+
+  // Shadow Trail (Phase Walk)
+  if (flags.shadowTrail) {
+    createShadowTrail(flags);
+  }
+
+  // Stealth (Death's Shadow tier 2)
+  if (flags.stealth) {
+    activateStealth(flags);
+  }
+
+  // Shadow Echo (Echo Step tier 2)
+  if (flags.shadowEcho) {
+    scheduleEcho(arrivalDamage, flags);
+  }
+
+  // Assassin crit bonus (tier 1 — +40% crit on next attack)
+  if (typeof flags.nextAttackCritBonus === 'number' && !flags.stealth) {
+    assassinCritBonusActive = true;
+    assassinCritBonusAmount = flags.nextAttackCritBonus as number;
+    // Generous timeout to prevent leaking
+    scheduleBuffExpiry('shadow_step_crit_bonus', 5.0, () => {
+      assassinCritBonusActive = false;
+      assassinCritBonusAmount = 0;
+    });
+  }
+
+  // Stealth overrides assassin crit with guaranteed crit
+  if (flags.stealth && flags.guaranteedCrit) {
+    assassinCritBonusActive = true;
+    assassinCritBonusAmount = 1.0; // guaranteed
+    scheduleBuffExpiry('shadow_step_crit_bonus', (flags.stealthDuration as number) ?? 2.0, () => {
+      assassinCritBonusActive = false;
+      assassinCritBonusAmount = 0;
+    });
+  }
+}
+
+// ==========================================================================
+// SHADOW STEP HELPERS
+// ==========================================================================
+
+/** Apply knockback to a monster away from a source point */
+function applyKnockback(monster: MonsterInstance, fromX: number, fromY: number, distance: number): void {
+  const dx = monster.x - fromX;
+  const dy = monster.y - fromY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist <= 0) return;
+
+  const newX = monster.x + (dx / dist) * distance;
+  const newY = monster.y + (dy / dist) * distance;
+
+  // Resolve against map walls
+  const state = getState();
+  if (state.activeExpedition) {
+    const resolved = safeResolvePosition(
+      state.activeExpedition.map,
+      monster.x, monster.y,
+      newX, newY,
+      Math.max(10, monster.size * 0.35),
+    );
+    monster.x = resolved.x;
+    monster.y = resolved.y;
+  } else {
+    monster.x = newX;
+    monster.y = newY;
+  }
+
+  emit('combat:knockback', {
+    targetId: monster.id,
+    fromX, fromY,
+    toX: monster.x, toY: monster.y,
+    duration: 0.15,
+  });
+}
+
+/** Create a shadow trail from dash start to landing (Phase Walk) */
+function createShadowTrail(flags: Record<string, number | boolean | string>): void {
+  const player = getPlayer();
+  const width = (flags.trailWidth as number) ?? 16;
+  const duration = (flags.trailDuration as number) ?? 2.0;
+  const damagePercent = (flags.trailDamagePercent as number) ?? 0.20;
+  const damagePerSec = Math.floor(player.attack * damagePercent);
+
+  const trail: ShadowTrailInstance = {
+    startX: dashState.startX,
+    startY: dashState.startY,
+    endX: player.x,
+    endY: player.y,
+    width,
+    remaining: duration,
+    damagePerTick: Math.floor(damagePerSec * SHADOW_TRAIL_TICK_INTERVAL),
+    tickTimer: SHADOW_TRAIL_TICK_INTERVAL,
+  };
+
+  activeTrails.push(trail);
+
+  emit('shadow:trailCreated', {
+    startX: trail.startX, startY: trail.startY,
+    endX: trail.endX, endY: trail.endY,
+    width, duration,
+  });
+}
+
+/** Activate stealth (Death's Shadow tier 2) */
+function activateStealth(flags: Record<string, number | boolean | string>): void {
+  const player = getPlayer();
+  stealthActive = true;
+  stealthTimer = (flags.stealthDuration as number) ?? 2.0;
+  stealthGuaranteedCrit = !!flags.guaranteedCrit;
+  stealthGuaranteedStatus = !!flags.guaranteedStatus;
+  player.isStealth = true;
+  emit('player:stealthStart');
+}
+
+/** Deactivate stealth */
+function deactivateStealth(): void {
+  if (!stealthActive) return;
+  stealthActive = false;
+  stealthTimer = 0;
+  const player = getPlayer();
+  player.isStealth = false;
+  emit('player:stealthEnd');
+}
+
+/** Schedule a shadow echo (Echo Step tier 2) */
+function scheduleEcho(arrivalBaseDamage: number, flags: Record<string, number | boolean | string>): void {
+  const player = getPlayer();
+  const echoDamageMult = (flags.echoDamageMult as number) ?? 0.60;
+
+  echoState = {
+    pending: true,
+    remaining: (flags.echoDelay as number) ?? 1.5,
+    startX: dashState.startX,
+    startY: dashState.startY,
+    endX: player.x,
+    endY: player.y,
+    arrivalDamage: Math.floor(arrivalBaseDamage * echoDamageMult),
+    flags,
+  };
+}
+
+/** Resolve the echo arrival (delayed dash replay) */
+function resolveEchoArrival(): void {
+  emit('shadow:echoStarted', {
+    startX: echoState.startX, startY: echoState.startY,
+    endX: echoState.endX, endY: echoState.endY,
+    duration: 0.2,
   });
 
-  // The actual position update happens over DASH_DURATION via the update loop,
-  // but we set the target so the scene/entity can lerp
-  dashState = {
-    active: true,
-    targetX,
-    targetY,
-    startX: player.x,
-    startY: player.y,
-    elapsed: 0,
-    duration: DASH_DURATION,
-    skillId: data.skillId,
-  };
+  // Find monsters at echo endpoint (40px radius)
+  const hits = findMonstersInCircle(echoState.endX, echoState.endY, 40);
+
+  for (const monster of hits) {
+    applyDamageToMonster(monster.id, echoState.arrivalDamage, 'physical', 1.0, { source: 'skill' });
+    if (!monster.isDead) {
+      applyEnemyStateLocal(monster.id, 'staggered', STAGGERED_DURATION, 1);
+    }
+  }
+
+  // Generate +1 Ash
+  emit('resonance:requestCharge', { type: 'ash', amount: 1 });
+
+  // If original flags had shadowTrail, create another trail for the echo
+  if (echoState.flags.shadowTrail) {
+    const width = (echoState.flags.trailWidth as number) ?? 16;
+    const duration = (echoState.flags.trailDuration as number) ?? 2.0;
+    const damagePercent = (echoState.flags.trailDamagePercent as number) ?? 0.20;
+    const player = getPlayer();
+    const damagePerSec = Math.floor(player.attack * damagePercent);
+
+    const trail: ShadowTrailInstance = {
+      startX: echoState.startX,
+      startY: echoState.startY,
+      endX: echoState.endX,
+      endY: echoState.endY,
+      width,
+      remaining: duration,
+      damagePerTick: Math.floor(damagePerSec * SHADOW_TRAIL_TICK_INTERVAL),
+      tickTimer: SHADOW_TRAIL_TICK_INTERVAL,
+    };
+
+    activeTrails.push(trail);
+    emit('shadow:trailCreated', {
+      startX: trail.startX, startY: trail.startY,
+      endX: trail.endX, endY: trail.endY,
+      width, duration,
+    });
+  }
+
+  // Through-dash stagger along echo path
+  if (echoState.flags.throughDashStagger) {
+    const state = getState();
+    for (const monster of state.monsters) {
+      if (monster.isDead) continue;
+      const dist = pointToSegmentDistance(
+        monster.x, monster.y,
+        echoState.startX, echoState.startY,
+        echoState.endX, echoState.endY,
+      );
+      if (dist <= PLAYER_BODY_RADIUS + monster.size / 2) {
+        applyEnemyStateLocal(monster.id, 'staggered', STAGGERED_DURATION, 1);
+      }
+    }
+  }
+}
+
+/** Point-to-segment distance for trail collision detection */
+function pointToSegmentDistance(
+  px: number, py: number,
+  x1: number, y1: number,
+  x2: number, y2: number,
+): number {
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.sqrt((px - x1) * (px - x1) + (py - y1) * (py - y1));
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+  const projX = x1 + t * dx, projY = y1 + t * dy;
+  return Math.sqrt((px - projX) * (px - projX) + (py - projY) * (py - projY));
+}
+
+// ==========================================================================
+// RESONANCE RELEASE HANDLER
+// ==========================================================================
+
+function onResonanceRelease(data: { type: 'ashburst' | 'overload'; x: number; y: number }): void {
+  const player = getPlayer();
+
+  // Flow State passive: +30% damage, +20% radius on resonance release
+  const flowBoost = player.resonance.flowReleaseBoost;
+  const damageMult = flowBoost ? (1 + FLOW_STATE_RELEASE_DAMAGE_BONUS) : 1;
+  const radiusMult = flowBoost ? (1 + FLOW_STATE_RELEASE_RADIUS_BONUS) : 1;
+
+  if (data.type === 'ashburst') {
+    // Physical AoE around player
+    const radius = ASHBURST_RADIUS * radiusMult;
+    const hits = findMonstersInCircle(data.x, data.y, radius);
+    const damage = Math.floor(player.attack * ASHBURST_DAMAGE_MULT * damageMult);
+    for (const monster of hits) {
+      applyDamageToMonster(monster.id, damage, 'physical', 1.0, { source: 'resonance' });
+    }
+  } else {
+    // Magic AoE around player
+    const radius = OVERLOAD_RADIUS * radiusMult;
+    const hits = findMonstersInCircle(data.x, data.y, radius);
+    const damage = Math.floor(player.magicPower * OVERLOAD_DAMAGE_MULT * damageMult);
+    for (const monster of hits) {
+      applyDamageToMonster(monster.id, damage, 'magic', 1.0, { source: 'resonance' });
+    }
+  }
 }
 
 // ==========================================================================
@@ -876,14 +1470,6 @@ interface BuffTimer {
 }
 const activeBuffTimers: BuffTimer[] = [];
 
-/** Armor debuff restoration timers */
-interface ArmorRestoreTimer {
-  monsterId: string;
-  armorAmount: number;
-  remaining: number;
-}
-const armorRestoreTimers: ArmorRestoreTimer[] = [];
-
 /** Shadow step dash state */
 interface DashState {
   active: boolean;
@@ -894,6 +1480,9 @@ interface DashState {
   elapsed: number;
   duration: number;
   skillId: string;
+  // Upgrade fields
+  flags: Record<string, number | boolean | string>;
+  throughStaggerHits: string[];  // monster IDs staggered during dash (Phase Walk)
 }
 let dashState: DashState = {
   active: false,
@@ -904,14 +1493,64 @@ let dashState: DashState = {
   elapsed: 0,
   duration: 0,
   skillId: '',
+  flags: {},
+  throughStaggerHits: [],
 };
 
-/** Overcharge bonus tracking */
-let overchargeBonusActive = false;
-let overchargeDamageMultiplier = 1.0;
+// Shadow Trail instances (Phase Walk)
+interface ShadowTrailInstance {
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  width: number;
+  remaining: number;
+  damagePerTick: number;
+  tickTimer: number;
+}
+const activeTrails: ShadowTrailInstance[] = [];
 
-/** Precision guaranteed crits remaining */
-let precisionCritsRemaining = 0;
+// Environmental zones (Aftershock, future ground effects)
+const activeEnvironmentalZones: EnvironmentalZone[] = [];
+
+// Stealth state (Death's Shadow)
+let stealthActive = false;
+let stealthTimer = 0;
+let stealthGuaranteedCrit = false;
+let stealthGuaranteedStatus = false;
+
+// Echo state (Echo Step)
+interface EchoState {
+  pending: boolean;
+  remaining: number;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  arrivalDamage: number;
+  flags: Record<string, number | boolean | string>;
+}
+let echoState: EchoState = {
+  pending: false, remaining: 0,
+  startX: 0, startY: 0, endX: 0, endY: 0,
+  arrivalDamage: 0, flags: {},
+};
+
+// Assassin crit bonus (consumed on next attack)
+let assassinCritBonusActive = false;
+let assassinCritBonusAmount = 0;
+
+/** Delayed hit queue — for effects that resolve after a short delay (e.g. Hemorrhage) */
+interface DelayedHit {
+  remaining: number;
+  targets: string[];        // monster IDs
+  damage: number;
+  damageType: DamageType;
+  bonusMultiplier: number;
+  source: string;
+  onResolve?: (monsterId: string) => void; // per-target callback (e.g. apply bleed)
+}
+const delayedHits: DelayedHit[] = [];
 
 // --- Timer helpers ---
 
@@ -925,44 +1564,279 @@ function scheduleBuffExpiry(skillId: string, duration: number, onExpire: () => v
   activeBuffTimers.push({ skillId, remaining: duration, onExpire });
 }
 
-function scheduleArmorRestore(monsterId: string, armorAmount: number, duration: number): void {
-  armorRestoreTimers.push({ monsterId, armorAmount, remaining: duration });
-}
-
 // ==========================================================================
-// Overcharge and Precision accessors (for other systems via events)
+// PROJECTILE HIT HANDLER — handles damage + all arcane bolt upgrade effects
 // ==========================================================================
 
-/**
- * Consume overcharge bonus. Returns the damage multiplier (1.0 if none).
- */
-export function consumeOverchargeBonus(): number {
-  if (!overchargeBonusActive) return 1.0;
-  const mult = overchargeDamageMultiplier;
-  overchargeBonusActive = false;
-  overchargeDamageMultiplier = 1.0;
-  return mult;
-}
+function onProjectileHit(data: { projectileId: string; targetId: string; x: number; y: number }): void {
+  const state = getState();
+  const proj = state.projectiles.find(p => p.id === data.projectileId);
+  if (!proj || proj.ownerId !== 'player') return;
+  if (proj.skillId !== 'arcane_bolt') return;
 
-/**
- * Consume one precision crit charge. Returns true if a guaranteed crit was consumed.
- */
-export function consumePrecisionCrit(): boolean {
-  if (precisionCritsRemaining <= 0) return false;
-  precisionCritsRemaining--;
+  const flags = getUpgradeFlags('arcane_bolt');
+  const player = getPlayer();
 
-  if (precisionCritsRemaining <= 0) {
-    emit('skill:buffExpired', { skillId: 'precision' });
+  // --- 1. Calculate hit damage (apply piercingDamageScale if set) ---
+  const rawDamage = proj.piercingDamageScale != null
+    ? Math.floor(proj.damage * proj.piercingDamageScale)
+    : proj.damage;
+
+  // --- 2. Deal damage ---
+  applyDamageToMonster(data.targetId, rawDamage, 'magic', 1.0, { source: 'skill' });
+
+  // --- 3. Apply Charged: 2 stacks if doubleCharged, else 1 ---
+  const monster = getMonsterById(data.targetId);
+  if (monster && !monster.isDead) {
+    if (flags.doubleCharged) {
+      // Apply 2 stacks (call twice so applyEnemyStateLocal increments)
+      applyEnemyStateLocal(data.targetId, 'charged', CHARGED_DURATION, CHARGED_MAX_STACKS);
+      applyEnemyStateLocal(data.targetId, 'charged', CHARGED_DURATION, CHARGED_MAX_STACKS);
+    } else {
+      applyEnemyStateLocal(data.targetId, 'charged', CHARGED_DURATION, CHARGED_MAX_STACKS);
+    }
   }
 
-  return true;
+  // --- 4. Discharge check (Path B): doubleCharged + monster at max Charged stacks ---
+  if (flags.doubleCharged) {
+    handleDischargeCheck(data.targetId, data.x, data.y, flags);
+  }
+
+  // --- 5. Chain bounce (Path A): if proj.bounces > 0 ---
+  if (proj.bounces != null && proj.bounces > 0) {
+    handleChainBounce(proj, data.x, data.y, flags);
+  }
+
+  // --- 6. Thunderchain burst: max-Charged target triggers Overload Burst ---
+  if (flags.overloadBurstOnMaxCharged) {
+    const targetMonster = getMonsterById(data.targetId);
+    if (targetMonster && !targetMonster.isDead) {
+      const chargedStacks = targetMonster.enemyStates
+        ?.filter(s => s.type === 'charged' && s.duration > 0)
+        .reduce((sum, s) => sum + s.stacks, 0) ?? 0;
+      if (chargedStacks >= CHARGED_MAX_STACKS) {
+        handleOverloadBurst(data.targetId, data.x, data.y, flags);
+      }
+    }
+  }
+
+  // --- 7. Piercing effects (Path C) ---
+  if (proj.piercing && proj.piercingHitCount != null) {
+    // Track hitSunderedTarget
+    const targetMon = getMonsterById(data.targetId);
+    if (targetMon && !targetMon.isDead) {
+      const hasSundered = targetMon.enemyStates?.some(s => s.type === 'sundered' && s.duration > 0) ?? false;
+      if (hasSundered) {
+        proj.hitSunderedTarget = true;
+      }
+    }
+
+    // Scale piercingDamageScale for next hit (Chain Reaction)
+    if (flags.piercingDamageScaling && proj.piercingDamageScale != null) {
+      proj.piercingDamageScale *= (1 + (flags.piercingDamageScaling as number));
+    }
+
+    // Explosion at threshold (Unstable Bolt: 3rd pierce)
+    const threshold = (flags.explosionThreshold as number) ?? 0;
+    if (threshold > 0 && proj.piercingHitCount === threshold) {
+      handlePiercingExplosion(proj, data.x, data.y, flags);
+    }
+  }
+}
+
+// ==========================================================================
+// ARCANE BOLT UPGRADE HELPERS
+// ==========================================================================
+
+/**
+ * Path B — Discharge: triggers when a monster reaches max Charged stacks.
+ * Clears all Charged on trigger target, AoE damage at position.
+ */
+function handleDischargeCheck(
+  monsterId: string,
+  hitX: number,
+  hitY: number,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const monster = getMonsterById(monsterId);
+  if (!monster || monster.isDead) return;
+
+  const chargedStacks = monster.enemyStates
+    ?.filter(s => s.type === 'charged' && s.duration > 0)
+    .reduce((sum, s) => sum + s.stacks, 0) ?? 0;
+
+  if (chargedStacks < CHARGED_MAX_STACKS) return;
+
+  // Clear all Charged stacks on trigger target
+  if (monster.enemyStates) {
+    for (let i = monster.enemyStates.length - 1; i >= 0; i--) {
+      if (monster.enemyStates[i].type === 'charged') {
+        monster.enemyStates.splice(i, 1);
+      }
+    }
+    emit('enemyState:expired', { monsterId, type: 'charged' });
+  }
+
+  // AoE damage at monster position
+  const player = getPlayer();
+  const radius = (flags.dischargeRadiusOverride as number) ?? (flags.dischargeRadius as number) ?? 80;
+  const damage = Math.floor(player.magicPower * ((flags.dischargeDamageMult as number) ?? 1.4));
+
+  const aoeHits = findMonstersInCircle(hitX, hitY, radius);
+  let hitCount = 0;
+  for (const target of aoeHits) {
+    if (target.id === monsterId) continue; // skip trigger target (already took projectile damage)
+    applyDamageToMonster(target.id, damage, 'magic', 1.0, { source: 'skill' });
+    hitCount++;
+
+    // Critical Mass: apply 1 Charged to all AoE targets
+    if (flags.dischargeAppliesCharged && !target.isDead) {
+      applyEnemyStateLocal(target.id, 'charged', CHARGED_DURATION, CHARGED_MAX_STACKS);
+    }
+  }
+
+  // Critical Mass: 3+ enemies hit → grant Primed to player
+  if (flags.dischargePrimedThreshold && hitCount >= (flags.dischargePrimedThreshold as number)) {
+    const player = getPlayer();
+    if (!player.combatStates.primed) {
+      player.combatStates.primed = true;
+      player.combatStates.primedMultiplier = 1 + PRIMED_DAMAGE_BONUS;
+      emit('playerState:primed', { multiplier: player.combatStates.primedMultiplier });
+    }
+  }
+
+  // Critical Mass: generate Ember charges
+  if (flags.dischargeEmberCharges) {
+    emit('resonance:requestCharge', { type: 'ember', amount: (flags.dischargeEmberCharges as number) });
+  }
 }
 
 /**
- * Get remaining precision crit charges.
+ * Path A — Chain Bounce: spawns a new homing projectile toward nearest unhit enemy.
  */
-export function getPrecisionCritsRemaining(): number {
-  return precisionCritsRemaining;
+function handleChainBounce(
+  proj: ProjectileInstance,
+  hitX: number,
+  hitY: number,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const bounceRange = proj.bounceRange ?? (flags.chainRange as number) ?? 200;
+  const target = findNearestMonster(hitX, hitY, bounceRange, proj.hitTargets);
+  if (!target) return;
+
+  const chainDamageFalloff = (flags.chainDamageFalloff as number) ?? (flags.chainDamageMult as number) ?? 0.50;
+  const chainDamage = Math.floor(proj.damage * chainDamageFalloff);
+
+  const dx = target.x - hitX;
+  const dy = target.y - hitY;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const speed = proj.speed;
+  const vx = dist > 0 ? (dx / dist) * speed : speed;
+  const vy = dist > 0 ? (dy / dist) * speed : 0;
+
+  const chainProj: ProjectileInstance = {
+    id: generateProjectileId(),
+    ownerId: 'player',
+    skillId: 'arcane_bolt',
+    x: hitX,
+    y: hitY,
+    velocityX: vx,
+    velocityY: vy,
+    speed,
+    damage: chainDamage,
+    damageType: 'magic',
+    piercing: false,
+    hitTargets: [...proj.hitTargets], // carry forward to avoid re-hitting
+    bounces: proj.bounces! - 1,
+    bounceRange,
+    maxDistance: bounceRange + 50,
+    distanceTraveled: 0,
+    isExpired: false,
+    color: proj.color,
+    size: 6, // slightly smaller visual cue
+    persistentHoming: true,
+    statusEffect: proj.statusEffect,
+    statusChance: proj.statusChance,
+  };
+
+  getState().projectiles.push(chainProj);
+  emit('projectile:spawned', { projectile: chainProj });
+}
+
+/**
+ * Thunderchain — Overload Burst: AoE at hit position when chain hits max-Charged enemy.
+ */
+function handleOverloadBurst(
+  triggerId: string,
+  hitX: number,
+  hitY: number,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const player = getPlayer();
+  const radius = (flags.overloadBurstRadius as number) ?? 50;
+  const damage = Math.floor(player.magicPower * 1.0);
+
+  const aoeHits = findMonstersInCircle(hitX, hitY, radius);
+  for (const target of aoeHits) {
+    if (target.id === triggerId) continue; // exclude trigger target
+    applyDamageToMonster(target.id, damage, 'magic', 1.0, { source: 'skill' });
+  }
+}
+
+/**
+ * Unstable Bolt — Piercing Explosion: triggers at explosionThreshold piercing hits.
+ */
+function handlePiercingExplosion(
+  proj: ProjectileInstance,
+  hitX: number,
+  hitY: number,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const radius = (flags.explosionRadius as number) ?? 60;
+  const bonusMult = (flags.explosionBonusMult as number) ?? 0.50;
+  const damage = Math.floor(proj.damage * bonusMult);
+
+  const aoeHits = findMonstersInCircle(hitX, hitY, radius);
+  for (const target of aoeHits) {
+    // Skip monsters already hit by the piercing projectile
+    if (proj.hitTargets.includes(target.id)) continue;
+    applyDamageToMonster(target.id, damage, 'magic', 1.0, { source: 'skill' });
+  }
+}
+
+// ==========================================================================
+// ENDPOINT DETONATION HANDLER (Chain Reaction — projectile:expiredWithPosition)
+// ==========================================================================
+
+function onProjectileExpiredWithPosition(data: { projectileId: string; x: number; y: number }): void {
+  const state = getState();
+  const proj = state.projectiles.find(p => p.id === data.projectileId);
+  if (!proj || proj.ownerId !== 'player') return;
+  if (proj.skillId !== 'arcane_bolt') return;
+  if (!proj.piercing || proj.piercingHitCount == null || proj.piercingHitCount === 0) return;
+
+  const flags = getUpgradeFlags('arcane_bolt');
+  if (!flags.endpointDetonation) return;
+
+  const maxRadius = (flags.maxDetonationRadius as number) ?? 140;
+  const radius = Math.min(
+    maxRadius,
+    CHAIN_REACTION_BASE_DETONATION_RADIUS + proj.piercingHitCount * CHAIN_REACTION_RADIUS_PER_HIT,
+  );
+
+  const rawDamage = Math.floor(proj.damage * (proj.piercingDamageScale ?? 1.0));
+
+  const aoeHits = findMonstersInCircle(data.x, data.y, radius);
+  for (const target of aoeHits) {
+    if (proj.hitSunderedTarget && flags.sunderedHybridDamage) {
+      // Split into 50% physical + 50% magic
+      const halfDamage = Math.floor(rawDamage / 2);
+      applyDamageToMonster(target.id, halfDamage, 'physical', 1.0, { source: 'skill' });
+      applyDamageToMonster(target.id, halfDamage, 'magic', 1.0, { source: 'skill' });
+    } else {
+      applyDamageToMonster(target.id, rawDamage, 'magic', 1.0, { source: 'skill' });
+    }
+  }
 }
 
 // ==========================================================================
@@ -972,32 +1846,8 @@ export function getPrecisionCritsRemaining(): number {
 type EffectHandler = (data: SkillUsedData) => void;
 
 const effectHandlers: Record<string, EffectHandler> = {
-  // Melee
   heavy_slash: handleHeavySlash,
-  execution_strike: handleExecutionStrike,
-  ground_slam: handleGroundSlam,
-  shield_bash: handleShieldBash,
-
-  // Projectile
   arcane_bolt: handleArcaneBolt,
-  chain_lightning: handleChainLightning,
-  arrow_barrage: handleArrowBarrage,
-
-  // AoE
-  charged_burst: handleChargedBurst,
-
-  // Buff
-  flurry: handleFlurry,
-  momentum: handleMomentum,
-  adrenaline_rush: handleAdrenalineRush,
-  overcharge: handleOvercharge,
-
-  // Instant
-  energy_surge: handleEnergySurge,
-  life_tap: handleLifeTap,
-  precision: handlePrecision,
-
-  // Dash
   shadow_step: handleShadowStep,
 };
 
@@ -1008,16 +1858,7 @@ const effectHandlers: Record<string, EffectHandler> = {
 function onSkillUsed(data: SkillUsedData): void {
   const handler = effectHandlers[data.skillId];
   if (handler) {
-    // Apply overcharge bonus if active and this is a damaging skill
-    // (overcharge is consumed inside applyDamageToMonster via the multiplier tracking)
     handler(data);
-  }
-}
-
-function onBuffExpired(data: { skillId: string }): void {
-  // Handle momentum deactivation when the toggle is turned off
-  if (data.skillId === 'momentum') {
-    handleMomentumDeactivate(data.skillId);
   }
 }
 
@@ -1028,15 +1869,66 @@ function onBuffExpired(data: { skillId: string }): void {
 export function init(): void {
   // Clear internal state
   activeBuffTimers.length = 0;
-  armorRestoreTimers.length = 0;
+  delayedHits.length = 0;
   dashState.active = false;
-  overchargeBonusActive = false;
-  overchargeDamageMultiplier = 1.0;
-  precisionCritsRemaining = 0;
+  dashState.flags = {};
+  dashState.throughStaggerHits = [];
   nextProjectileId = 0;
 
+  // Clear shadow step upgrade state
+  activeTrails.length = 0;
+  stealthActive = false;
+  stealthTimer = 0;
+  stealthGuaranteedCrit = false;
+  stealthGuaranteedStatus = false;
+  echoState.pending = false;
+  assassinCritBonusActive = false;
+  assassinCritBonusAmount = 0;
+
   on('skill:used', onSkillUsed);
-  on('skill:buffExpired', onBuffExpired);
+  on('resonance:release', onResonanceRelease);
+  on('projectile:hit', onProjectileHit);
+  on('projectile:expiredWithPosition', onProjectileExpiredWithPosition);
+
+  // Stealth break: damage dealt by player → consume crit bonus, apply status effects
+  on('combat:damageDealt', (data) => {
+    if (data.source === 'resonance') return; // don't break stealth on resonance releases
+
+    // Consume assassin crit bonus after first hit
+    if (assassinCritBonusActive) {
+      assassinCritBonusActive = false;
+      assassinCritBonusAmount = 0;
+      // Cancel the timeout timer
+      const timerIdx = activeBuffTimers.findIndex(t => t.skillId === 'shadow_step_crit_bonus');
+      if (timerIdx !== -1) activeBuffTimers.splice(timerIdx, 1);
+    }
+
+    // Stealth break on dealing damage
+    if (stealthActive) {
+      // Apply guaranteed status effects to the target before breaking stealth
+      if (stealthGuaranteedStatus) {
+        const player = getPlayer();
+        const statusTypes: Array<'bleed' | 'poison' | 'burn' | 'slow' | 'freeze'> =
+          ['bleed', 'poison', 'burn', 'slow', 'freeze'];
+        for (const statusType of statusTypes) {
+          emit('status:requestApply', {
+            targetId: data.targetId,
+            type: statusType,
+            sourceAttack: data.damageType === 'magic' ? player.magicPower : player.attack,
+            sourcePotency: player.statusPotency,
+          });
+        }
+      }
+      deactivateStealth();
+    }
+  });
+
+  // Stealth break: player takes damage
+  on('player:damaged', () => {
+    if (stealthActive) {
+      deactivateStealth();
+    }
+  });
 }
 
 export function update(dt: number): void {
@@ -1052,17 +1944,16 @@ export function update(dt: number): void {
     }
   }
 
-  // --- Tick armor restore timers ---
-  for (let i = armorRestoreTimers.length - 1; i >= 0; i--) {
-    const timer = armorRestoreTimers[i];
-    timer.remaining -= dt;
-
-    if (timer.remaining <= 0) {
-      const monster = getMonsterById(timer.monsterId);
-      if (monster && !monster.isDead) {
-        monster.armor += timer.armorAmount;
+  // --- Tick delayed hits ---
+  for (let i = delayedHits.length - 1; i >= 0; i--) {
+    delayedHits[i].remaining -= dt;
+    if (delayedHits[i].remaining <= 0) {
+      const hit = delayedHits[i];
+      for (const monsterId of hit.targets) {
+        applyDamageToMonster(monsterId, hit.damage, hit.damageType, hit.bonusMultiplier, { source: hit.source });
+        if (hit.onResolve) hit.onResolve(monsterId);
       }
-      armorRestoreTimers.splice(i, 1);
+      delayedHits.splice(i, 1);
     }
   }
 
@@ -1092,10 +1983,26 @@ export function update(dt: number): void {
         dashState.active = false;
         player.isDashing = false;
         player.isInvulnerable = false;
+        resolveShadowStepLanding();
       }
     } else {
       player.x = frameTargetX;
       player.y = frameTargetY;
+    }
+
+    // Through-dash stagger (Phase Walk): check monsters along dash path each frame
+    if (dashState.flags.throughDashStagger) {
+      for (const monster of state.monsters) {
+        if (monster.isDead) continue;
+        if (dashState.throughStaggerHits.includes(monster.id)) continue;
+        const dx = monster.x - player.x;
+        const dy = monster.y - player.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= PLAYER_BODY_RADIUS + monster.size / 2) {
+          applyEnemyStateLocal(monster.id, 'staggered', STAGGERED_DURATION, 1);
+          dashState.throughStaggerHits.push(monster.id);
+        }
+      }
     }
 
     emit('player:moved', { x: player.x, y: player.y });
@@ -1104,6 +2011,54 @@ export function update(dt: number): void {
       dashState.active = false;
       player.isDashing = false;
       player.isInvulnerable = false;
+      resolveShadowStepLanding();
+    }
+  }
+
+  // --- Tick shadow trails ---
+  for (let i = activeTrails.length - 1; i >= 0; i--) {
+    const trail = activeTrails[i];
+    trail.remaining -= dt;
+    trail.tickTimer -= dt;
+
+    if (trail.tickTimer <= 0) {
+      trail.tickTimer += SHADOW_TRAIL_TICK_INTERVAL;
+      const state = getState();
+      for (const monster of state.monsters) {
+        if (monster.isDead) continue;
+        const dist = pointToSegmentDistance(
+          monster.x, monster.y,
+          trail.startX, trail.startY,
+          trail.endX, trail.endY,
+        );
+        if (dist <= trail.width / 2 + monster.size / 2) {
+          applyDamageToMonster(monster.id, trail.damagePerTick, 'physical', 1.0, { source: 'skill' });
+        }
+      }
+    }
+
+    if (trail.remaining <= 0) {
+      activeTrails.splice(i, 1);
+    }
+  }
+
+  // --- Tick environmental zones ---
+  updateEnvironmentalZones(dt);
+
+  // --- Tick stealth ---
+  if (stealthActive) {
+    stealthTimer -= dt;
+    if (stealthTimer <= 0) {
+      deactivateStealth();
+    }
+  }
+
+  // --- Tick echo ---
+  if (echoState.pending) {
+    echoState.remaining -= dt;
+    if (echoState.remaining <= 0) {
+      echoState.pending = false;
+      resolveEchoArrival();
     }
   }
 }

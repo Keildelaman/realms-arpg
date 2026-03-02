@@ -1,10 +1,12 @@
 // ============================================================================
-// Skill Passives — Passive skill effects that modify player behavior
+// Skill Passives — 5 passive skill effects (Phase 2 — Spec Reconciliation)
 // ============================================================================
 //
-// Passive skills are equipped in passive slots (0-2) and provide ongoing
-// effects that react to combat events. Each passive has an activate/deactivate
-// pair and may have per-frame update logic.
+// combat_rhythm:    3+ hits on same target → escalating +5%/hit damage (max +25%)
+// arcane_recursion: Magic cast → reduce all other skill CDs by 0.5s
+// shadow_reflexes:  After Shadow Step → 2 empowered hits (+20% dmg, guarantee states)
+// blood_price:      Take damage → Ash charges + Wrath stacking damage bonus
+// flow_state:       In Flow → +1 Resonance/hit, release +30% dmg/+20% radius, +8 energy
 //
 // Passives NEVER import other systems. They read from game-state and
 // communicate via the event bus.
@@ -12,17 +14,31 @@
 
 import type {
   SkillDefinition,
-  SkillLevelData,
   DamageType,
 } from '@/core/types';
 import { on, off, emit } from '@/core/event-bus';
 import {
-  getState,
   getPlayer,
-  healPlayer,
   addEnergy,
 } from '@/core/game-state';
 import { SKILLS } from '@/data/skills.data';
+import {
+  RHYTHM_HIT_THRESHOLD,
+  RHYTHM_MAX_BONUS,
+  RHYTHM_BONUS_PER_HIT,
+  RHYTHM_TIMEOUT,
+  ARCANE_RECURSION_CDR,
+  BLOOD_PRICE_HP_CHUNK,
+  BLOOD_PRICE_WRATH_STACK,
+  BLOOD_PRICE_WRATH_CAP,
+  BLOOD_PRICE_PANIC_THRESHOLD,
+  SHADOW_REFLEXES_HITS,
+  SHADOW_REFLEXES_DAMAGE_BONUS,
+  SHADOW_REFLEXES_DURATION,
+  SHADOW_REFLEXES_PANIC_WINDOW,
+  SHADOW_REFLEXES_PANIC_CDR,
+  FLOW_STATE_ENERGY_RESTORE,
+} from '@/data/constants';
 
 // --- Types ---
 
@@ -44,67 +60,27 @@ const passiveStates = new Map<string, PassiveState>();
 /** Registered event handlers for each passive, needed for cleanup on deactivate */
 const passiveHandlerRefs = new Map<string, PassiveHandlers>();
 
-// --- Combat Mastery state ---
-let combatMasteryConsecutiveHits = 0;
-let combatMasteryTimer = 0; // resets after 2s of no hits
-let combatMasteryDamageBonus = 0;
+// --- Combat Rhythm state ---
+let rhythmTargetId: string | null = null;
+let rhythmHitCount = 0;
+let rhythmBonus = 0;
+let rhythmTimer = 0;
+let rhythmBonusApplied = false;
 
-// --- Combo Artist state ---
-let comboArtistLastSkillId: string | null = null;
-let comboArtistLastSkillTime = 0;
-let comboArtistBonusActive = false;
-let comboArtistBonusTimer = 0;
-let comboArtistDamageBonus = 0;
+// --- Shadow Reflexes state ---
+let shadowReflexesHitsRemaining = 0;
+let shadowReflexesTimer = 0;
+let shadowReflexesDmgBonusApplied = false;
+let shadowReflexesLastDamagedTime = -999;
+let shadowReflexesMonotonicTime = 0;
 
-// --- Focused Mind state ---
-let focusedMindTimeSinceLastAttack = 0;
-let focusedMindActive = false;
+// --- Flow State state ---
+let flowStateReleaseBoostApplied = false;
 
 // --- Helpers ---
 
 function getPassiveDef(passiveId: string): SkillDefinition | undefined {
   return SKILLS[passiveId];
-}
-
-function getPassiveLevel(passiveId: string): number {
-  const player = getPlayer();
-  const baseLevel = player.skillLevels[passiveId] ?? 0;
-
-  // Include item bonuses
-  let itemBonus = 0;
-  for (const slot of Object.values(player.equipment)) {
-    if (!slot) continue;
-    for (const affix of slot.affixes) {
-      if (affix.id === `skill_level_${passiveId}`) {
-        itemBonus += affix.value;
-      }
-    }
-  }
-
-  return baseLevel + itemBonus;
-}
-
-function getPassiveLevelData(passiveId: string): SkillLevelData | undefined {
-  const def = getPassiveDef(passiveId);
-  if (!def) return undefined;
-
-  const level = getPassiveLevel(passiveId);
-  if (level <= 0) return undefined;
-
-  // Clamp to max available level data
-  const clampedIndex = Math.min(level - 1, def.levels.length - 1);
-  return def.levels[clampedIndex];
-}
-
-/**
- * Interpolate a passive value that scales from min to max across levels 1-5.
- */
-function scaleValue(min: number, max: number, passiveId: string): number {
-  const level = getPassiveLevel(passiveId);
-  if (level <= 0) return min;
-  const maxLevel = 5;
-  const t = (Math.min(level, maxLevel) - 1) / Math.max(1, maxLevel - 1);
-  return min + (max - min) * t;
 }
 
 // --- Helper to register handlers with cleanup tracking ---
@@ -120,7 +96,6 @@ function registerHandler<E extends string>(
   const refs = passiveHandlerRefs.get(passiveId)!;
   refs.handlers.push({ event, fn });
 
-  // Use type assertion since we know the event bus accepts these
   (on as (event: string, handler: (data: never) => void) => void)(event, fn);
 }
 
@@ -140,15 +115,15 @@ function unregisterHandlers(passiveId: string): void {
 // ==========================================================================
 
 // --------------------------------------------------------------------------
-// 1. Combat Mastery — Consecutive hits add +3-7% damage. Resets on 2s timeout.
+// 1. Combat Rhythm — 3+ hits on same target → escalating damage bonus
 // --------------------------------------------------------------------------
 
-function activateCombatMastery(passiveId: string): void {
-  combatMasteryConsecutiveHits = 0;
-  combatMasteryTimer = 0;
-  combatMasteryDamageBonus = 0;
-
-  const bonusPerHit = scaleValue(0.03, 0.07, passiveId);
+function activateCombatRhythm(_passiveId: string): void {
+  rhythmTargetId = null;
+  rhythmHitCount = 0;
+  rhythmBonus = 0;
+  rhythmTimer = 0;
+  rhythmBonusApplied = false;
 
   const onDamageDealt = (data: {
     targetId: string;
@@ -157,411 +132,313 @@ function activateCombatMastery(passiveId: string): void {
     damageType: DamageType;
     x: number;
     y: number;
+    source?: string;
   }) => {
-    combatMasteryConsecutiveHits++;
-    combatMasteryTimer = 2.0; // reset 2s window
+    if (data.source === 'resonance') return;
 
-    // Calculate new bonus
-    const newBonus = combatMasteryConsecutiveHits * bonusPerHit;
-    const bonusDiff = newBonus - combatMasteryDamageBonus;
+    if (data.targetId === rhythmTargetId) {
+      // Same target — increment
+      rhythmHitCount++;
+      rhythmTimer = RHYTHM_TIMEOUT;
 
-    if (bonusDiff !== 0) {
-      const player = getPlayer();
-      // Additive bonus to attack
-      player.attack = Math.floor(player.baseAttack * (1 + newBonus));
-      combatMasteryDamageBonus = newBonus;
-      emit('player:statsChanged');
+      if (rhythmHitCount >= RHYTHM_HIT_THRESHOLD) {
+        const newBonus = Math.min(RHYTHM_MAX_BONUS, (rhythmHitCount - RHYTHM_HIT_THRESHOLD) * RHYTHM_BONUS_PER_HIT);
+
+        if (newBonus !== rhythmBonus) {
+          // Remove old bonus, apply new
+          removeRhythmBonus();
+          rhythmBonus = newBonus;
+          if (rhythmBonus > 0) {
+            applyRhythmBonus();
+          }
+        }
+      }
+    } else {
+      // Different target — reset
+      removeRhythmBonus();
+      rhythmTargetId = data.targetId;
+      rhythmHitCount = 1;
+      rhythmTimer = RHYTHM_TIMEOUT;
+      rhythmBonus = 0;
     }
   };
 
-  const onMiss = () => {
-    resetCombatMastery();
-  };
-
-  registerHandler(passiveId, 'combat:damageDealt', onDamageDealt as (data: never) => void);
-  registerHandler(passiveId, 'combat:miss', onMiss as (data: never) => void);
+  registerHandler(_passiveId, 'combat:damageDealt', onDamageDealt as (data: never) => void);
 }
 
-function resetCombatMastery(): void {
-  if (combatMasteryDamageBonus > 0) {
-    const player = getPlayer();
-    player.attack = player.baseAttack;
-    emit('player:statsChanged');
-  }
-  combatMasteryConsecutiveHits = 0;
-  combatMasteryTimer = 0;
-  combatMasteryDamageBonus = 0;
-}
-
-function deactivateCombatMastery(passiveId: string): void {
-  resetCombatMastery();
-  unregisterHandlers(passiveId);
-}
-
-function updateCombatMastery(dt: number): void {
-  if (combatMasteryTimer > 0) {
-    combatMasteryTimer -= dt;
-    if (combatMasteryTimer <= 0) {
-      resetCombatMastery();
-    }
-  }
-}
-
-// --------------------------------------------------------------------------
-// 2. Vampiric Strikes — Heal for 2-6% of damage dealt.
-// --------------------------------------------------------------------------
-
-function activateVampiricStrikes(passiveId: string): void {
-  const healPercent = scaleValue(0.02, 0.06, passiveId);
-
-  const onDamageDealt = (data: {
-    targetId: string;
-    damage: number;
-    isCrit: boolean;
-    damageType: DamageType;
-    x: number;
-    y: number;
-  }) => {
-    const healAmount = Math.max(1, Math.floor(data.damage * healPercent));
-    const actualHeal = healPlayer(healAmount);
-
-    if (actualHeal > 0) {
-      emit('player:healed', { amount: actualHeal, source: 'vampiric_strikes' });
-    }
-  };
-
-  registerHandler(passiveId, 'combat:damageDealt', onDamageDealt as (data: never) => void);
-}
-
-function deactivateVampiricStrikes(passiveId: string): void {
-  unregisterHandlers(passiveId);
-}
-
-// --------------------------------------------------------------------------
-// 3. Critical Flow — On crit hit, gain 3-7 bonus energy.
-// --------------------------------------------------------------------------
-
-function activateCriticalFlow(passiveId: string): void {
-  const energyGain = Math.floor(scaleValue(3, 7, passiveId));
-
-  const onDamageDealt = (data: {
-    targetId: string;
-    damage: number;
-    isCrit: boolean;
-    damageType: DamageType;
-    x: number;
-    y: number;
-  }) => {
-    if (!data.isCrit) return;
-
-    const actual = addEnergy(energyGain);
-    if (actual > 0) {
-      const player = getPlayer();
-      emit('energy:changed', {
-        current: player.currentEnergy,
-        max: player.maxEnergy,
-      });
-    }
-  };
-
-  registerHandler(passiveId, 'combat:damageDealt', onDamageDealt as (data: never) => void);
-}
-
-function deactivateCriticalFlow(passiveId: string): void {
-  unregisterHandlers(passiveId);
-}
-
-// --------------------------------------------------------------------------
-// 4. Heavy Handed — +20-40% damage, -15% attack speed (flat modifier).
-// --------------------------------------------------------------------------
-
-function activateHeavyHanded(passiveId: string): void {
-  const damageBonus = scaleValue(0.20, 0.40, passiveId);
-  const attackSpeedPenalty = 0.15;
-
+function applyRhythmBonus(): void {
+  if (rhythmBonusApplied || rhythmBonus <= 0) return;
   const player = getPlayer();
-  player.attack = Math.floor(player.attack * (1 + damageBonus));
-  player.attackSpeed *= (1 - attackSpeedPenalty);
-
+  player.attack = Math.floor(player.attack * (1 + rhythmBonus));
+  player.magicPower = Math.floor(player.magicPower * (1 + rhythmBonus));
+  rhythmBonusApplied = true;
   emit('player:statsChanged');
-
-  // Store the modifiers in passive state for clean removal
-  const state = passiveStates.get(passiveId);
-  if (state) {
-    (state as PassiveState & { damageBonus?: number; attackSpeedPenalty?: number }).damageBonus = damageBonus;
-    (state as PassiveState & { attackSpeedPenalty?: number }).attackSpeedPenalty = attackSpeedPenalty;
-  }
 }
 
-function deactivateHeavyHanded(passiveId: string): void {
-  const state = passiveStates.get(passiveId) as
-    (PassiveState & { damageBonus?: number; attackSpeedPenalty?: number }) | undefined;
-
-  if (state) {
-    const damageBonus = state.damageBonus ?? 0.20;
-    const attackSpeedPenalty = state.attackSpeedPenalty ?? 0.15;
-
-    const player = getPlayer();
-    player.attack = Math.floor(player.attack / (1 + damageBonus));
-    player.attackSpeed /= (1 - attackSpeedPenalty);
-
-    emit('player:statsChanged');
-  }
-
-  unregisterHandlers(passiveId);
-}
-
-// --------------------------------------------------------------------------
-// 5. Combo Artist — If 2 different skills used within 3s, +20-40% damage for 4s.
-// --------------------------------------------------------------------------
-
-function activateComboArtist(passiveId: string): void {
-  comboArtistLastSkillId = null;
-  comboArtistLastSkillTime = 0;
-  comboArtistBonusActive = false;
-  comboArtistBonusTimer = 0;
-  comboArtistDamageBonus = 0;
-
-  const damageBonus = scaleValue(0.20, 0.40, passiveId);
-
-  const onSkillUsed = (data: { skillId: string; x: number; y: number; angle: number }) => {
-    const now = getState().gameTime;
-
-    if (comboArtistLastSkillId !== null &&
-        comboArtistLastSkillId !== data.skillId &&
-        (now - comboArtistLastSkillTime) <= 3.0) {
-      // Combo triggered
-      if (!comboArtistBonusActive) {
-        comboArtistBonusActive = true;
-        comboArtistDamageBonus = damageBonus;
-
-        const player = getPlayer();
-        player.attack = Math.floor(player.attack * (1 + damageBonus));
-        emit('player:statsChanged');
-      }
-
-      comboArtistBonusTimer = 4.0; // refresh duration
-    }
-
-    comboArtistLastSkillId = data.skillId;
-    comboArtistLastSkillTime = now;
-  };
-
-  registerHandler(passiveId, 'skill:used', onSkillUsed as (data: never) => void);
-}
-
-function deactivateComboArtist(passiveId: string): void {
-  if (comboArtistBonusActive) {
-    const player = getPlayer();
-    player.attack = Math.floor(player.attack / (1 + comboArtistDamageBonus));
-    emit('player:statsChanged');
-  }
-  comboArtistBonusActive = false;
-  comboArtistBonusTimer = 0;
-  comboArtistDamageBonus = 0;
-  comboArtistLastSkillId = null;
-  unregisterHandlers(passiveId);
-}
-
-function updateComboArtist(dt: number): void {
-  if (comboArtistBonusActive) {
-    comboArtistBonusTimer -= dt;
-    if (comboArtistBonusTimer <= 0) {
-      comboArtistBonusActive = false;
-      const player = getPlayer();
-      player.attack = Math.floor(player.attack / (1 + comboArtistDamageBonus));
-      comboArtistDamageBonus = 0;
-      emit('player:statsChanged');
-    }
-  }
-}
-
-// --------------------------------------------------------------------------
-// 6. Berserker — When HP below 50%, +10-30% damage and +5-15% crit chance.
-// --------------------------------------------------------------------------
-
-let berserkerActive = false;
-let berserkerDamageBonus = 0;
-let berserkerCritBonus = 0;
-
-function activateBerserker(passiveId: string): void {
-  berserkerActive = false;
-  berserkerDamageBonus = 0;
-  berserkerCritBonus = 0;
-
-  // We check HP ratio each frame in update, not via events
-  // Store scale values
-  const state = passiveStates.get(passiveId);
-  if (state) {
-    (state as PassiveState & { scaledDamage?: number; scaledCrit?: number }).scaledDamage =
-      scaleValue(0.10, 0.30, passiveId);
-    (state as PassiveState & { scaledDamage?: number; scaledCrit?: number }).scaledCrit =
-      scaleValue(0.05, 0.15, passiveId);
-  }
-}
-
-function deactivateBerserker(passiveId: string): void {
-  if (berserkerActive) {
-    const player = getPlayer();
-    player.attack = Math.floor(player.attack / (1 + berserkerDamageBonus));
-    player.critChance -= berserkerCritBonus;
-    berserkerActive = false;
-    berserkerDamageBonus = 0;
-    berserkerCritBonus = 0;
-    emit('player:statsChanged');
-  }
-  unregisterHandlers(passiveId);
-}
-
-function updateBerserker(passiveId: string): void {
+function removeRhythmBonus(): void {
+  if (!rhythmBonusApplied || rhythmBonus <= 0) return;
   const player = getPlayer();
-  const hpRatio = player.currentHP / player.maxHP;
-  const state = passiveStates.get(passiveId) as
-    (PassiveState & { scaledDamage?: number; scaledCrit?: number }) | undefined;
+  player.attack = Math.floor(player.attack / (1 + rhythmBonus));
+  player.magicPower = Math.floor(player.magicPower / (1 + rhythmBonus));
+  rhythmBonusApplied = false;
+  emit('player:statsChanged');
+}
 
-  const targetDamageBonus = state?.scaledDamage ?? scaleValue(0.10, 0.30, passiveId);
-  const targetCritBonus = state?.scaledCrit ?? scaleValue(0.05, 0.15, passiveId);
+function deactivateCombatRhythm(passiveId: string): void {
+  removeRhythmBonus();
+  rhythmTargetId = null;
+  rhythmHitCount = 0;
+  rhythmBonus = 0;
+  rhythmTimer = 0;
+  rhythmBonusApplied = false;
+  unregisterHandlers(passiveId);
+}
 
-  if (hpRatio < 0.5 && !berserkerActive) {
-    // Activate berserker bonus
-    berserkerActive = true;
-    berserkerDamageBonus = targetDamageBonus;
-    berserkerCritBonus = targetCritBonus;
-
-    player.attack = Math.floor(player.attack * (1 + berserkerDamageBonus));
-    player.critChance += berserkerCritBonus;
-    emit('player:statsChanged');
-  } else if (hpRatio >= 0.5 && berserkerActive) {
-    // Deactivate berserker bonus
-    player.attack = Math.floor(player.attack / (1 + berserkerDamageBonus));
-    player.critChance -= berserkerCritBonus;
-    berserkerActive = false;
-    berserkerDamageBonus = 0;
-    berserkerCritBonus = 0;
-    emit('player:statsChanged');
+function updateCombatRhythm(dt: number): void {
+  if (rhythmHitCount > 0) {
+    rhythmTimer -= dt;
+    if (rhythmTimer <= 0) {
+      removeRhythmBonus();
+      rhythmTargetId = null;
+      rhythmHitCount = 0;
+      rhythmBonus = 0;
+      rhythmTimer = 0;
+    }
   }
 }
 
 // --------------------------------------------------------------------------
-// 7. Efficient Casting — All skill energy costs reduced by 8-20%.
+// 2. Arcane Recursion — Magic cast → reduce all other CDs by 0.5s
 // --------------------------------------------------------------------------
-// No direct event wiring needed here.
-// Energy-cost reduction is computed in the skills system based on whether
-// this passive is equipped and its current effective level.
 
-function activateEfficientCasting(_passiveId: string): void {
+function activateArcaneRecursion(passiveId: string): void {
+  const onSkillUsed = (data: { skillId: string; x: number; y: number; angle: number }) => {
+    const skillDef = SKILLS[data.skillId];
+    if (!skillDef || skillDef.damageType !== 'magic') return;
+
+    emit('skill:reduceCooldowns', {
+      amount: ARCANE_RECURSION_CDR,
+      excludeSkillId: data.skillId,
+    });
+  };
+
+  registerHandler(passiveId, 'skill:used', onSkillUsed as (data: never) => void);
 }
 
-function deactivateEfficientCasting(passiveId: string): void {
+function deactivateArcaneRecursion(passiveId: string): void {
   unregisterHandlers(passiveId);
 }
 
 // --------------------------------------------------------------------------
-// 8. Spell Weaver — Using any skill reduces all other skill CDs by 0.3-0.8s.
-//    Cooldown floor still applies.
+// 3. Blood Price — Take damage → Ash charges, Wrath stacking bonus, panic
 // --------------------------------------------------------------------------
 
-function activateSpellWeaver(passiveId: string): void {
-  const cdReduction = scaleValue(0.3, 0.8, passiveId);
+function activateBloodPrice(passiveId: string): void {
+  const onPlayerDamaged = (data: { amount: number; source: string }) => {
+    // Skip self-inflicted damage (e.g., from old blood_price mechanic)
+    if (data.source === 'blood_price') return;
 
-  const onSkillUsed = (data: { skillId: string; x: number; y: number; angle: number }) => {
-    const state = getState();
     const player = getPlayer();
+    const cs = player.combatStates;
 
-    // Reduce cooldowns on all OTHER equipped active skills
-    for (const equippedSkillId of player.activeSkills) {
-      if (equippedSkillId === null || equippedSkillId === data.skillId) continue;
-
-      const skillState = state.skillStates[equippedSkillId];
-      if (!skillState || skillState.cooldownRemaining <= 0) continue;
-
-      skillState.cooldownRemaining = Math.max(0, skillState.cooldownRemaining - cdReduction);
-
-      if (skillState.cooldownRemaining <= 0) {
-        skillState.cooldownRemaining = 0;
-        emit('skill:cooldownReady', { skillId: equippedSkillId });
+    // Generate Ash charges: 1 per 5% maxHP chunk received
+    const chunkSize = player.maxHP * BLOOD_PRICE_HP_CHUNK;
+    if (chunkSize > 0) {
+      const chunks = Math.floor(data.amount / chunkSize);
+      if (chunks > 0) {
+        emit('resonance:requestCharge', { type: 'ash', amount: Math.min(5, chunks) });
       }
     }
+
+    // In Wrath: +5% damage per hit taken (max +35%)
+    if (cs.wrath) {
+      cs.wrathBonusExtra = Math.min(BLOOD_PRICE_WRATH_CAP, cs.wrathBonusExtra + BLOOD_PRICE_WRATH_STACK);
+    }
+
+    // Panic: below 15% HP → lose all Resonance
+    const hpRatio = player.currentHP / player.maxHP;
+    if (hpRatio < BLOOD_PRICE_PANIC_THRESHOLD) {
+      emit('resonance:clearAll');
+    }
   };
 
-  registerHandler(passiveId, 'skill:used', onSkillUsed as (data: never) => void);
+  const onWrathExited = () => {
+    const player = getPlayer();
+    player.combatStates.wrathBonusExtra = 0;
+  };
+
+  registerHandler(passiveId, 'player:damaged', onPlayerDamaged as (data: never) => void);
+  registerHandler(passiveId, 'playerState:wrathExited', onWrathExited as (data: never) => void);
 }
 
-function deactivateSpellWeaver(passiveId: string): void {
+function deactivateBloodPrice(passiveId: string): void {
+  const player = getPlayer();
+  player.combatStates.wrathBonusExtra = 0;
   unregisterHandlers(passiveId);
 }
 
 // --------------------------------------------------------------------------
-// 9. Residual Energy — When any buff expires, gain 4-10 energy.
+// 4. Shadow Reflexes — After Shadow Step → 2 empowered hits + panic dash
 // --------------------------------------------------------------------------
 
-function activateResidualEnergy(passiveId: string): void {
-  const energyGain = Math.floor(scaleValue(4, 10, passiveId));
+function activateShadowReflexes(passiveId: string): void {
+  shadowReflexesHitsRemaining = 0;
+  shadowReflexesTimer = 0;
+  shadowReflexesDmgBonusApplied = false;
+  shadowReflexesLastDamagedTime = -999;
+  shadowReflexesMonotonicTime = 0;
 
-  const onBuffExpired = (data: { skillId: string }) => {
-    const actual = addEnergy(energyGain);
-    if (actual > 0) {
-      const player = getPlayer();
-      emit('energy:changed', {
-        current: player.currentEnergy,
-        max: player.maxEnergy,
+  const onSkillUsed = (data: { skillId: string; x: number; y: number; angle: number }) => {
+    if (data.skillId !== 'shadow_step') return;
+
+    // Activate empowered window
+    shadowReflexesHitsRemaining = SHADOW_REFLEXES_HITS;
+    shadowReflexesTimer = SHADOW_REFLEXES_DURATION;
+    applyShadowReflexesBonus();
+
+    const player = getPlayer();
+    player.combatStates.guaranteeStateApply = true;
+
+    // Panic dash check: if damaged within the last 0.5s
+    if ((shadowReflexesMonotonicTime - shadowReflexesLastDamagedTime) <= SHADOW_REFLEXES_PANIC_WINDOW) {
+      emit('skill:reduceSingleCooldown', {
+        skillId: 'shadow_step',
+        amount: SHADOW_REFLEXES_PANIC_CDR,
       });
     }
   };
 
-  registerHandler(passiveId, 'skill:buffExpired', onBuffExpired as (data: never) => void);
-}
+  const onDamageDealt = (data: {
+    targetId: string;
+    damage: number;
+    isCrit: boolean;
+    damageType: DamageType;
+    x: number;
+    y: number;
+    source?: string;
+  }) => {
+    if (data.source === 'resonance') return;
+    if (shadowReflexesHitsRemaining <= 0) return;
 
-function deactivateResidualEnergy(passiveId: string): void {
-  unregisterHandlers(passiveId);
-}
-
-// --------------------------------------------------------------------------
-// 10. Focused Mind — When player hasn't attacked for 1.5s, gain +2-5 energy/sec.
-// --------------------------------------------------------------------------
-
-function activateFocusedMind(passiveId: string): void {
-  focusedMindTimeSinceLastAttack = 0;
-  focusedMindActive = false;
-
-  const onPlayerAttack = () => {
-    focusedMindTimeSinceLastAttack = 0;
-    focusedMindActive = false;
-  };
-
-  const onSkillUsed = () => {
-    focusedMindTimeSinceLastAttack = 0;
-    focusedMindActive = false;
-  };
-
-  registerHandler(passiveId, 'combat:playerAttack', onPlayerAttack as (data: never) => void);
-  registerHandler(passiveId, 'skill:used', onSkillUsed as (data: never) => void);
-}
-
-function deactivateFocusedMind(passiveId: string): void {
-  focusedMindActive = false;
-  focusedMindTimeSinceLastAttack = 0;
-  unregisterHandlers(passiveId);
-}
-
-function updateFocusedMind(passiveId: string, dt: number): void {
-  focusedMindTimeSinceLastAttack += dt;
-
-  if (focusedMindTimeSinceLastAttack >= 1.5) {
-    focusedMindActive = true;
-
-    const energyPerSec = scaleValue(2, 5, passiveId);
-    const energyThisTick = energyPerSec * dt;
-    const actual = addEnergy(energyThisTick);
-
-    if (actual > 0) {
+    shadowReflexesHitsRemaining--;
+    if (shadowReflexesHitsRemaining <= 0) {
+      removeShadowReflexesBonus();
       const player = getPlayer();
-      emit('energy:changed', {
-        current: player.currentEnergy,
-        max: player.maxEnergy,
-      });
+      player.combatStates.guaranteeStateApply = false;
+    }
+  };
+
+  const onPlayerDamaged = (_data: { amount: number; source: string }) => {
+    shadowReflexesLastDamagedTime = shadowReflexesMonotonicTime;
+  };
+
+  registerHandler(passiveId, 'skill:used', onSkillUsed as (data: never) => void);
+  registerHandler(passiveId, 'combat:damageDealt', onDamageDealt as (data: never) => void);
+  registerHandler(passiveId, 'player:damaged', onPlayerDamaged as (data: never) => void);
+}
+
+function applyShadowReflexesBonus(): void {
+  if (shadowReflexesDmgBonusApplied) return;
+  const player = getPlayer();
+  player.attack = Math.floor(player.attack * (1 + SHADOW_REFLEXES_DAMAGE_BONUS));
+  player.magicPower = Math.floor(player.magicPower * (1 + SHADOW_REFLEXES_DAMAGE_BONUS));
+  shadowReflexesDmgBonusApplied = true;
+  emit('player:statsChanged');
+}
+
+function removeShadowReflexesBonus(): void {
+  if (!shadowReflexesDmgBonusApplied) return;
+  const player = getPlayer();
+  player.attack = Math.floor(player.attack / (1 + SHADOW_REFLEXES_DAMAGE_BONUS));
+  player.magicPower = Math.floor(player.magicPower / (1 + SHADOW_REFLEXES_DAMAGE_BONUS));
+  shadowReflexesDmgBonusApplied = false;
+  emit('player:statsChanged');
+}
+
+function deactivateShadowReflexes(passiveId: string): void {
+  removeShadowReflexesBonus();
+  const player = getPlayer();
+  player.combatStates.guaranteeStateApply = false;
+  shadowReflexesHitsRemaining = 0;
+  shadowReflexesTimer = 0;
+  shadowReflexesDmgBonusApplied = false;
+  shadowReflexesLastDamagedTime = -999;
+  shadowReflexesMonotonicTime = 0;
+  unregisterHandlers(passiveId);
+}
+
+function updateShadowReflexes(dt: number): void {
+  shadowReflexesMonotonicTime += dt;
+
+  if (shadowReflexesHitsRemaining > 0) {
+    shadowReflexesTimer -= dt;
+    if (shadowReflexesTimer <= 0) {
+      shadowReflexesHitsRemaining = 0;
+      removeShadowReflexesBonus();
+      const player = getPlayer();
+      player.combatStates.guaranteeStateApply = false;
     }
   }
+}
+
+// --------------------------------------------------------------------------
+// 5. Flow State — In Flow: +1 Resonance/hit, release boost, energy restore
+// --------------------------------------------------------------------------
+
+function activateFlowState(passiveId: string): void {
+  flowStateReleaseBoostApplied = false;
+
+  const onFlowEntered = () => {
+    // Restore 8 energy
+    const player = getPlayer();
+    const actual = addEnergy(FLOW_STATE_ENERGY_RESTORE);
+    if (actual > 0) {
+      emit('energy:changed', {
+        current: player.currentEnergy,
+        max: player.maxEnergy,
+      });
+    }
+
+    // Enable release boost
+    player.resonance.flowReleaseBoost = true;
+    flowStateReleaseBoostApplied = true;
+  };
+
+  const onFlowBroken = () => {
+    const player = getPlayer();
+    player.resonance.flowReleaseBoost = false;
+    flowStateReleaseBoostApplied = false;
+  };
+
+  const onDamageDealt = (data: {
+    targetId: string;
+    damage: number;
+    isCrit: boolean;
+    damageType: DamageType;
+    x: number;
+    y: number;
+    source?: string;
+  }) => {
+    if (data.source === 'resonance') return;
+
+    const player = getPlayer();
+    if (!player.combatStates.flow) return;
+
+    // +1 matching Resonance charge per hit while in Flow
+    const chargeType = data.damageType === 'physical' ? 'ash' : 'ember';
+    emit('resonance:requestCharge', { type: chargeType, amount: 1 });
+  };
+
+  registerHandler(passiveId, 'playerState:flowEntered', onFlowEntered as (data: never) => void);
+  registerHandler(passiveId, 'playerState:flowBroken', onFlowBroken as (data: never) => void);
+  registerHandler(passiveId, 'combat:damageDealt', onDamageDealt as (data: never) => void);
+}
+
+function deactivateFlowState(passiveId: string): void {
+  const player = getPlayer();
+  player.resonance.flowReleaseBoost = false;
+  flowStateReleaseBoostApplied = false;
+  unregisterHandlers(passiveId);
 }
 
 // ==========================================================================
@@ -573,36 +450,24 @@ type DeactivateHandler = (passiveId: string) => void;
 type UpdateHandler = (passiveId: string, dt: number) => void;
 
 const activateHandlers: Record<string, ActivateHandler> = {
-  combat_mastery: activateCombatMastery,
-  vampiric_strikes: activateVampiricStrikes,
-  critical_flow: activateCriticalFlow,
-  heavy_handed: activateHeavyHanded,
-  combo_artist: activateComboArtist,
-  berserker: activateBerserker,
-  efficient_casting: activateEfficientCasting,
-  spell_weaver: activateSpellWeaver,
-  residual_energy: activateResidualEnergy,
-  focused_mind: activateFocusedMind,
+  combat_rhythm: activateCombatRhythm,
+  arcane_recursion: activateArcaneRecursion,
+  blood_price: activateBloodPrice,
+  shadow_reflexes: activateShadowReflexes,
+  flow_state: activateFlowState,
 };
 
 const deactivateHandlers: Record<string, DeactivateHandler> = {
-  combat_mastery: deactivateCombatMastery,
-  vampiric_strikes: deactivateVampiricStrikes,
-  critical_flow: deactivateCriticalFlow,
-  heavy_handed: deactivateHeavyHanded,
-  combo_artist: deactivateComboArtist,
-  berserker: deactivateBerserker,
-  efficient_casting: deactivateEfficientCasting,
-  spell_weaver: deactivateSpellWeaver,
-  residual_energy: deactivateResidualEnergy,
-  focused_mind: deactivateFocusedMind,
+  combat_rhythm: deactivateCombatRhythm,
+  arcane_recursion: deactivateArcaneRecursion,
+  blood_price: deactivateBloodPrice,
+  shadow_reflexes: deactivateShadowReflexes,
+  flow_state: deactivateFlowState,
 };
 
 const updateHandlers: Record<string, UpdateHandler> = {
-  combat_mastery: (_id, dt) => updateCombatMastery(dt),
-  combo_artist: (_id, dt) => updateComboArtist(dt),
-  berserker: (id) => updateBerserker(id),
-  focused_mind: (id, dt) => updateFocusedMind(id, dt),
+  combat_rhythm: (_id, dt) => updateCombatRhythm(dt),
+  shadow_reflexes: (_id, dt) => updateShadowReflexes(dt),
 };
 
 // ==========================================================================
@@ -616,7 +481,8 @@ export function activate(passiveId: string): void {
   const def = getPassiveDef(passiveId);
   if (!def || def.type !== 'passive') return;
 
-  const level = getPassiveLevel(passiveId);
+  const player = getPlayer();
+  const level = player.skillLevels[passiveId] ?? 0;
   if (level <= 0) return;
 
   // Already active?
@@ -686,19 +552,19 @@ export function init(): void {
   passiveHandlerRefs.clear();
 
   // Reset all internal state
-  combatMasteryConsecutiveHits = 0;
-  combatMasteryTimer = 0;
-  combatMasteryDamageBonus = 0;
-  comboArtistLastSkillId = null;
-  comboArtistLastSkillTime = 0;
-  comboArtistBonusActive = false;
-  comboArtistBonusTimer = 0;
-  comboArtistDamageBonus = 0;
-  berserkerActive = false;
-  berserkerDamageBonus = 0;
-  berserkerCritBonus = 0;
-  focusedMindTimeSinceLastAttack = 0;
-  focusedMindActive = false;
+  rhythmTargetId = null;
+  rhythmHitCount = 0;
+  rhythmBonus = 0;
+  rhythmTimer = 0;
+  rhythmBonusApplied = false;
+
+  shadowReflexesHitsRemaining = 0;
+  shadowReflexesTimer = 0;
+  shadowReflexesDmgBonusApplied = false;
+  shadowReflexesLastDamagedTime = -999;
+  shadowReflexesMonotonicTime = 0;
+
+  flowStateReleaseBoostApplied = false;
 
   // Listen for skill equip/unequip to auto-activate/deactivate passives
   on('skill:equipped', onSkillEquipped);

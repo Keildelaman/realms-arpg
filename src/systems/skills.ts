@@ -6,6 +6,7 @@ import type {
   SkillDefinition,
   SkillRuntimeState,
   SkillMechanic,
+  SkillUpgradeState,
 } from '@/core/types';
 import { on, emit } from '@/core/event-bus';
 import {
@@ -18,6 +19,7 @@ import {
   ACTIVE_SKILL_SLOTS,
   PASSIVE_SKILL_SLOTS,
   COOLDOWN_FLOOR_PERCENT,
+  MAX_RESPECS_PER_SESSION,
 } from '@/data/constants';
 
 // Skill definitions imported from data module (assumed to exist)
@@ -32,29 +34,13 @@ const activeToggles = new Set<string>();
 /** Tracks which channel skills are currently being held */
 const activeChannels = new Set<string>();
 
-/** Tracks the "overcharge" next-skill modifier: skillId -> remaining bonus multiplier */
-let nextSkillDamageBonus = 0;
+/** Tracks how many upgrade respecs have been used this session */
+let respecsUsed = 0;
 
 // --- Helpers ---
 
 function getSkillDef(skillId: string): SkillDefinition | undefined {
   return SKILLS[skillId];
-}
-
-function getEfficientCastingReduction(): number {
-  const player = getPlayer();
-
-  if (!player.passiveSkills.includes('efficient_casting')) {
-    return 0;
-  }
-
-  const level = getSkillLevel('efficient_casting');
-  if (level <= 0) return 0;
-
-  // Scales from 8% to 20% across levels 1-5.
-  const clampedLevel = Math.min(level, 5);
-  const t = (clampedLevel - 1) / 4;
-  return 0.08 + (0.20 - 0.08) * t;
 }
 
 function ensureSkillState(skillId: string): SkillRuntimeState {
@@ -110,7 +96,11 @@ export function getEffectiveCooldown(skillId: string): number {
   const levelData = def.levels[level - 1];
   if (!levelData) return 0;
 
-  const baseCooldown = levelData.cooldown;
+  // Check upgrade path cooldown override (e.g. Ravager 4.5s, Sunbreaker 4.0s)
+  const flags = getUpgradeFlags(skillId);
+  const baseCooldown = typeof flags.cooldownOverride === 'number'
+    ? flags.cooldownOverride
+    : levelData.cooldown;
 
   // Gather cooldown reduction from equipment/buffs
   // For now, the player state doesn't have a dedicated CDR stat,
@@ -125,7 +115,6 @@ export function getEffectiveCooldown(skillId: string): number {
 
 /**
  * Get the energy cost for a skill at its current level.
- * Passives like efficient_casting can reduce the final value.
  */
 export function getEffectiveEnergyCost(skillId: string): number {
   const def = getSkillDef(skillId);
@@ -137,11 +126,7 @@ export function getEffectiveEnergyCost(skillId: string): number {
   const levelData = def.levels[level - 1];
   if (!levelData) return 0;
 
-  const baseCost = levelData.energyCost;
-  const reduction = getEfficientCastingReduction();
-  const reducedCost = baseCost * (1 - reduction);
-
-  return Math.max(0, reducedCost);
+  return levelData.energyCost;
 }
 
 /**
@@ -179,6 +164,10 @@ export function unlockSkill(skillId: string): boolean {
   // SP cost
   if (player.skillPoints < def.unlockCost) return false;
 
+  // Check unlock condition
+  const condition = checkUnlockCondition(skillId);
+  if (!condition.met) return false;
+
   // Spend SP and unlock
   player.skillPoints -= def.unlockCost;
   player.unlockedSkills.push(skillId);
@@ -190,6 +179,53 @@ export function unlockSkill(skillId: string): boolean {
   emit('skill:unlocked', { skillId });
 
   return true;
+}
+
+/**
+ * Check if a skill's unlock condition is met (beyond SP cost).
+ * Exported separately so UI/Codex can query lock reasons without attempting unlock.
+ */
+export function checkUnlockCondition(skillId: string): { met: boolean; reason?: string } {
+  const def = getSkillDef(skillId);
+  if (!def) return { met: false, reason: 'Unknown skill' };
+
+  const condition = def.unlockCondition;
+  if (!condition) return { met: true };
+
+  const player = getPlayer();
+
+  switch (condition.type) {
+    case 'level':
+      if (player.level < (condition.value as number))
+        return { met: false, reason: `Requires Level ${condition.value}` };
+      return { met: true };
+
+    case 'boss':
+      if (!player.bossesKilled.includes(condition.value as string))
+        return { met: false, reason: `Defeat ${condition.value} first` };
+      return { met: true };
+
+    case 'usageCount': {
+      const [targetSkill, countStr] = (condition.value as string).split(':');
+      const required = parseInt(countStr, 10);
+      const current = player.skillUsageCounts[targetSkill] ?? 0;
+      if (current < required)
+        return { met: false, reason: `Use ${targetSkill} ${required} times (${current}/${required})` };
+      return { met: true };
+    }
+
+    case 'stat': {
+      const [stat, thresholdStr] = (condition.value as string).split(':');
+      const threshold = parseInt(thresholdStr, 10);
+      const current = (player as unknown as Record<string, number>)[stat] ?? 0;
+      if (current < threshold)
+        return { met: false, reason: `Requires ${threshold} ${stat} (${current}/${threshold})` };
+      return { met: true };
+    }
+
+    default:
+      return { met: true };
+  }
 }
 
 /**
@@ -388,6 +424,9 @@ export function activateSkill(skillId: string, angle: number): boolean {
     angle,
   });
 
+  // Track usage count (for unlock conditions)
+  player.skillUsageCounts[skillId] = (player.skillUsageCounts[skillId] ?? 0) + 1;
+
   return true;
 }
 
@@ -430,23 +469,6 @@ export function reduceAllCooldowns(amount: number, excludeSkillId?: string): voi
       emit('skill:cooldownReady', { skillId: equippedSkillId });
     }
   }
-}
-
-/**
- * Consume the next-skill damage bonus (used by overcharge).
- * Returns the bonus multiplier (0 if none).
- */
-export function consumeNextSkillDamageBonus(): number {
-  const bonus = nextSkillDamageBonus;
-  nextSkillDamageBonus = 0;
-  return bonus;
-}
-
-/**
- * Set the next-skill damage bonus (used by overcharge buff handler).
- */
-export function setNextSkillDamageBonus(bonus: number): void {
-  nextSkillDamageBonus = bonus;
 }
 
 /**
@@ -575,6 +597,116 @@ function releaseChannel(skillId: string): void {
   activeChannels.delete(skillId);
 }
 
+// --- Upgrade Fork Management ---
+
+/**
+ * Choose an upgrade path for a skill (tier 1 fork).
+ * Locks out the other two paths.
+ */
+export function chooseUpgradePath(skillId: string, path: 'A' | 'B' | 'C'): boolean {
+  const def = getSkillDef(skillId);
+  if (!def?.upgradeTree) return false;
+
+  const player = getPlayer();
+  if (!player.unlockedSkills.includes(skillId)) return false;
+
+  const upgrade = player.skillUpgrades[skillId];
+  if (upgrade && upgrade.tier >= 1) return false;
+
+  const pathDef = def.upgradeTree.tier1[path];
+  if (player.skillPoints < pathDef.spCost) return false;
+
+  player.skillPoints -= pathDef.spCost;
+  player.skillUpgrades[skillId] = { pathChoice: path, tier: 1 };
+
+  emit('skill:upgraded', { skillId, path, tier: 1 });
+  return true;
+}
+
+/**
+ * Unlock the tier 2 Awakening for a skill.
+ * Requires tier 1 already chosen.
+ */
+export function unlockAwakening(skillId: string): boolean {
+  const def = getSkillDef(skillId);
+  if (!def?.upgradeTree) return false;
+
+  const player = getPlayer();
+  const upgrade = player.skillUpgrades[skillId];
+  if (!upgrade || upgrade.tier !== 1 || !upgrade.pathChoice) return false;
+
+  const pathDef = def.upgradeTree.tier2[upgrade.pathChoice];
+  if (player.skillPoints < pathDef.spCost) return false;
+
+  player.skillPoints -= pathDef.spCost;
+  upgrade.tier = 2;
+
+  emit('skill:upgraded', { skillId, path: upgrade.pathChoice, tier: 2 });
+  return true;
+}
+
+/**
+ * Get the current upgrade state for a skill.
+ */
+export function getUpgradeState(skillId: string): SkillUpgradeState {
+  const player = getPlayer();
+  return player.skillUpgrades[skillId] ?? { pathChoice: null, tier: 0 };
+}
+
+/**
+ * Get the merged flags for the currently active upgrade path.
+ * Returns empty object if no path chosen.
+ */
+export function getUpgradeFlags(skillId: string): Record<string, number | boolean | string> {
+  const def = getSkillDef(skillId);
+  if (!def?.upgradeTree) return {};
+
+  const player = getPlayer();
+  const upgrade = player.skillUpgrades[skillId];
+  if (!upgrade || !upgrade.pathChoice) return {};
+
+  const flags: Record<string, number | boolean | string> = {};
+
+  // Merge tier 1 flags
+  const t1 = def.upgradeTree.tier1[upgrade.pathChoice];
+  if (t1.flags) Object.assign(flags, t1.flags);
+
+  // Merge tier 2 flags (if awakening unlocked)
+  if (upgrade.tier >= 2) {
+    const t2 = def.upgradeTree.tier2[upgrade.pathChoice];
+    if (t2.flags) Object.assign(flags, t2.flags);
+  }
+
+  return flags;
+}
+
+/**
+ * Respec a skill's upgrade path. Refunds SP.
+ * Limited to MAX_RESPECS_PER_SESSION respecs per session.
+ */
+export function respecSkillUpgrade(skillId: string): boolean {
+  const player = getPlayer();
+  const upgrade = player.skillUpgrades[skillId];
+  if (!upgrade || upgrade.tier === 0) return false;
+
+  if (respecsUsed >= MAX_RESPECS_PER_SESSION) return false;
+
+  const def = getSkillDef(skillId);
+  if (!def?.upgradeTree || !upgrade.pathChoice) return false;
+
+  let refund = def.upgradeTree.tier1[upgrade.pathChoice].spCost;
+  if (upgrade.tier >= 2) {
+    refund += def.upgradeTree.tier2[upgrade.pathChoice].spCost;
+  }
+
+  player.skillPoints += refund;
+  player.skillUpgrades[skillId] = { pathChoice: null, tier: 0 };
+  respecsUsed++;
+
+  emit('skill:respecced', { skillId, spRefunded: refund });
+  return true;
+}
+
 // --- Event handlers ---
 
 function onPlayerAttack(data: { angle: number; skillId?: string }): void {
@@ -583,14 +715,62 @@ function onPlayerAttack(data: { angle: number; skillId?: string }): void {
   }
 }
 
+/**
+ * Event-driven CDR: reduce all skill cooldowns by a given amount.
+ * Enforces 50% CD floor per skill so passives can't reduce to 0.
+ */
+function onReduceCooldowns(data: { amount: number; excludeSkillId?: string }): void {
+  const state = getState();
+  const player = getPlayer();
+
+  for (const equippedSkillId of player.activeSkills) {
+    if (equippedSkillId === null) continue;
+    if (equippedSkillId === data.excludeSkillId) continue;
+
+    const skillState = state.skillStates[equippedSkillId];
+    if (!skillState || skillState.cooldownRemaining <= 0) continue;
+
+    // Compute floor from base cooldown (respecting upgrade path override)
+    const def = getSkillDef(equippedSkillId);
+    if (!def) continue;
+    const level = getSkillLevel(equippedSkillId);
+    if (level <= 0) continue;
+    const upgradeFlags = getUpgradeFlags(equippedSkillId);
+    const baseCooldown = typeof upgradeFlags.cooldownOverride === 'number'
+      ? upgradeFlags.cooldownOverride
+      : (def.levels[level - 1]?.cooldown ?? 0);
+    const floor = baseCooldown * COOLDOWN_FLOOR_PERCENT;
+
+    const newCd = Math.max(floor, skillState.cooldownRemaining - data.amount);
+    // Only reduce, never increase
+    if (newCd < skillState.cooldownRemaining) {
+      skillState.cooldownRemaining = newCd;
+    }
+
+    if (skillState.cooldownRemaining <= 0) {
+      skillState.cooldownRemaining = 0;
+      emit('skill:cooldownReady', { skillId: equippedSkillId });
+    }
+  }
+}
+
+/**
+ * Event-driven single-skill CDR (e.g., shadow_reflexes panic dash).
+ */
+function onReduceSingleCooldown(data: { skillId: string; amount: number }): void {
+  reduceCooldown(data.skillId, data.amount);
+}
+
 // --- Lifecycle ---
 
 export function init(): void {
   activeToggles.clear();
   activeChannels.clear();
-  nextSkillDamageBonus = 0;
+  respecsUsed = 0;
 
   on('combat:playerAttack', onPlayerAttack);
+  on('skill:reduceCooldowns', onReduceCooldowns);
+  on('skill:reduceSingleCooldown', onReduceSingleCooldown);
 }
 
 export function update(dt: number): void {
