@@ -20,6 +20,8 @@ import {
   getOrderedExpeditionZones,
   getObjectiveForTier,
   getExpeditionMonsterLevel,
+  getExpeditionTotalBudget,
+  getExpeditionMapSizeScale,
   getExpeditionCompletionXP,
   getExpeditionCompletionGold,
   getExpeditionCompletionChestCount,
@@ -37,6 +39,8 @@ interface Station {
 const HUB_WIDTH = 1280;
 const HUB_HEIGHT = 720;
 const HUB_PLAYER_SPEED = 240;
+const MAP_PANEL_FRAME_W = 760;
+const MAP_PANEL_FRAME_H = 484;
 
 export class HubScene extends Phaser.Scene {
   private playerEntity!: PlayerEntity;
@@ -54,11 +58,35 @@ export class HubScene extends Phaser.Scene {
   private promptText!: Phaser.GameObjects.Text;
 
   private mapPanel!: Phaser.GameObjects.Container;
-  private mapPanelTierText!: Phaser.GameObjects.Text;
-  private mapPanelZoneText!: Phaser.GameObjects.Text;
-  private mapPanelObjectiveText!: Phaser.GameObjects.Text;
-  private mapPanelPreviewText!: Phaser.GameObjects.Text;
+  private mapPanelTitleText!: Phaser.GameObjects.Text;
+  private mapPanelSubtitleText!: Phaser.GameObjects.Text;
+  private mapPanelZoneValueText!: Phaser.GameObjects.Text;
+  private mapPanelTierValueText!: Phaser.GameObjects.Text;
+  private mapPanelZoneLockText!: Phaser.GameObjects.Text;
+  private mapPanelObjectiveValueText!: Phaser.GameObjects.Text;
+  private mapPanelMonsterLevelValueText!: Phaser.GameObjects.Text;
+  private mapPanelRewardValueText!: Phaser.GameObjects.Text;
+  private mapPanelScaleValueText!: Phaser.GameObjects.Text;
+  private mapPanelProgressValueText!: Phaser.GameObjects.Text;
   private mapPanelStatusText!: Phaser.GameObjects.Text;
+  private mapPanelTierPrevButtonBg!: Phaser.GameObjects.Rectangle;
+  private mapPanelTierPrevText!: Phaser.GameObjects.Text;
+  private mapPanelTierNextButtonBg!: Phaser.GameObjects.Rectangle;
+  private mapPanelTierNextText!: Phaser.GameObjects.Text;
+  private mapPanelZonePrevButtonBg!: Phaser.GameObjects.Rectangle;
+  private mapPanelZonePrevText!: Phaser.GameObjects.Text;
+  private mapPanelZoneNextButtonBg!: Phaser.GameObjects.Rectangle;
+  private mapPanelZoneNextText!: Phaser.GameObjects.Text;
+  private mapPanelZonePrevHitZone!: Phaser.GameObjects.Zone;
+  private mapPanelZoneNextHitZone!: Phaser.GameObjects.Zone;
+  private mapPanelTierPrevHitZone!: Phaser.GameObjects.Zone;
+  private mapPanelTierNextHitZone!: Phaser.GameObjects.Zone;
+  private mapPanelLaunchHitZone!: Phaser.GameObjects.Zone;
+  private mapPanelCloseHitZone!: Phaser.GameObjects.Zone;
+  private mapPanelLaunchButtonBg!: Phaser.GameObjects.Rectangle;
+  private mapPanelLaunchButtonText!: Phaser.GameObjects.Text;
+  private mapPanelCloseButtonBg!: Phaser.GameObjects.Rectangle;
+  private mapPanelCloseButtonText!: Phaser.GameObjects.Text;
   private mapPanelHintText!: Phaser.GameObjects.Text;
   private panelOpen = false;
 
@@ -134,6 +162,14 @@ export class HubScene extends Phaser.Scene {
     });
 
     this.keyEsc.on('down', () => {
+      if (getState().codexOpen) {
+        emit('ui:codexToggle');
+        return;
+      }
+      if (getState().stashOpen) {
+        emit('ui:stashToggle');
+        return;
+      }
       if (getState().merchantOpen) {
         emit('ui:merchantToggle');
         return;
@@ -149,6 +185,8 @@ export class HubScene extends Phaser.Scene {
       }
     });
 
+    this.input.on('pointerdown', this.onPointerDown, this);
+
     if (!this.scene.isActive('UIScene')) {
       this.scene.launch('UIScene');
     }
@@ -162,7 +200,7 @@ export class HubScene extends Phaser.Scene {
     const pointer = this.input.activePointer;
     player.facingAngle = Math.atan2(pointer.worldY - player.y, pointer.worldX - player.x);
 
-    if (!this.panelOpen && !getState().merchantOpen) {
+    if (!this.panelOpen && !getState().merchantOpen && !getState().stashOpen && !getState().codexOpen) {
       let dx = 0;
       let dy = 0;
       if (this.cursors.left.isDown || this.keyA.isDown) dx -= 1;
@@ -612,81 +650,363 @@ export class HubScene extends Phaser.Scene {
     this.mapPanel.setDepth(80);
     this.mapPanel.setVisible(false);
 
-    const bg = this.add.graphics();
-    bg.fillStyle(0x111827, 0.96);
-    bg.fillRoundedRect(-300, -220, 600, 440, 10);
-    bg.lineStyle(2, 0x4b5563, 0.9);
-    bg.strokeRoundedRect(-300, -220, 600, 440, 10);
+    const frame = this.add.graphics();
+    frame.fillStyle(0x0a1020, 0.97);
+    frame.fillRoundedRect(-380, -242, MAP_PANEL_FRAME_W, MAP_PANEL_FRAME_H, 14);
+    frame.fillStyle(0x111d33, 0.96);
+    frame.fillRoundedRect(-372, -234, 744, 468, 12);
+    frame.lineStyle(2, 0x28466e, 0.8);
+    frame.strokeRoundedRect(-372, -234, 744, 468, 12);
 
-    const title = this.add.text(0, -188, 'Map Device', {
+    // Left and right content cards.
+    frame.fillStyle(0x0f1728, 0.9);
+    frame.fillRoundedRect(-352, -142, 332, 262, 10);
+    frame.fillStyle(0x101a2b, 0.9);
+    frame.fillRoundedRect(20, -142, 332, 262, 10);
+    frame.lineStyle(1, 0x243246, 0.9);
+    frame.strokeRoundedRect(-352, -142, 332, 262, 10);
+    frame.strokeRoundedRect(20, -142, 332, 262, 10);
+
+    this.mapPanelTitleText = this.add.text(-352, -206, 'Map Device', {
       fontFamily: 'monospace',
-      fontSize: '20px',
-      color: '#f9fafb',
+      fontSize: '24px',
+      color: '#f8fafc',
       stroke: '#000000',
       strokeThickness: 2,
-    }).setOrigin(0.5);
+    }).setOrigin(0, 0.5);
 
-    this.mapPanelTierText = this.add.text(0, -132, '', {
+    this.mapPanelSubtitleText = this.add.text(-352, -176, 'Select zone and tier, then launch expedition.', {
       fontFamily: 'monospace',
-      fontSize: '16px',
-      color: '#93c5fd',
+      fontSize: '13px',
+      color: '#94a3b8',
       stroke: '#000000',
-      strokeThickness: 2,
-    }).setOrigin(0.5);
+      strokeThickness: 1,
+    }).setOrigin(0, 0.5);
 
-    this.mapPanelZoneText = this.add.text(0, -92, '', {
+    this.mapPanelCloseButtonBg = this.add.rectangle(340, -206, 28, 22, 0x7f1d1d, 0.35)
+      .setStrokeStyle(1, 0xef4444, 0.85)
+      .setInteractive({ useHandCursor: true });
+    this.mapPanelCloseButtonText = this.add.text(340, -206, 'X', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#fecaca',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    const leftTitle = this.add.text(-332, -118, 'Selection', {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#7dd3fc',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0, 0.5);
+
+    const rightTitle = this.add.text(40, -118, 'Run Summary', {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#7dd3fc',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0, 0.5);
+
+    const zoneLabel = this.add.text(-332, -78, 'Zone', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#94a3b8',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0, 0.5);
+    this.mapPanelZoneValueText = this.add.text(-286, -78, '', {
       fontFamily: 'monospace',
       fontSize: '16px',
       color: '#a7f3d0',
       stroke: '#000000',
       strokeThickness: 2,
-    }).setOrigin(0.5);
-
-    this.mapPanelObjectiveText = this.add.text(0, -52, '', {
+    }).setOrigin(0, 0.5);
+    this.mapPanelZonePrevButtonBg = this.add.rectangle(-294, -48, 78, 24, 0x1e3a8a, 0.3)
+      .setStrokeStyle(1, 0x3b82f6, 0.8)
+      .setInteractive({ useHandCursor: true });
+    this.mapPanelZonePrevText = this.add.text(-294, -48, 'Prev', {
       fontFamily: 'monospace',
-      fontSize: '15px',
+      fontSize: '12px',
+      color: '#93c5fd',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    this.mapPanelZoneNextButtonBg = this.add.rectangle(-198, -48, 78, 24, 0x1e3a8a, 0.3)
+      .setStrokeStyle(1, 0x3b82f6, 0.8)
+      .setInteractive({ useHandCursor: true });
+    this.mapPanelZoneNextText = this.add.text(-198, -48, 'Next', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#93c5fd',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    this.mapPanelZoneLockText = this.add.text(-332, -16, '', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#fca5a5',
+      wordWrap: { width: 300 },
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0, 0);
+
+    const tierLabel = this.add.text(-332, 28, 'Tier', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#94a3b8',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0, 0.5);
+    this.mapPanelTierValueText = this.add.text(-286, 28, '', {
+      fontFamily: 'monospace',
+      fontSize: '16px',
+      color: '#bfdbfe',
+      stroke: '#000000',
+      strokeThickness: 2,
+    }).setOrigin(0, 0.5);
+    this.mapPanelTierPrevButtonBg = this.add.rectangle(-294, 58, 78, 24, 0x1e3a8a, 0.3)
+      .setStrokeStyle(1, 0x3b82f6, 0.8)
+      .setInteractive({ useHandCursor: true });
+    this.mapPanelTierPrevText = this.add.text(-294, 58, '- Tier', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#93c5fd',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    this.mapPanelTierNextButtonBg = this.add.rectangle(-198, 58, 78, 24, 0x1e3a8a, 0.3)
+      .setStrokeStyle(1, 0x3b82f6, 0.8)
+      .setInteractive({ useHandCursor: true });
+    this.mapPanelTierNextText = this.add.text(-198, 58, '+ Tier', {
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      color: '#93c5fd',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    this.mapPanelObjectiveValueText = this.add.text(40, -78, '', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
       color: '#fbbf24',
       stroke: '#000000',
       strokeThickness: 2,
-    }).setOrigin(0.5);
-
-    this.mapPanelPreviewText = this.add.text(0, 8, '', {
+    }).setOrigin(0, 0.5);
+    this.mapPanelMonsterLevelValueText = this.add.text(40, -48, '', {
       fontFamily: 'monospace',
       fontSize: '13px',
-      color: '#e5e7eb',
-      align: 'center',
+      color: '#e2e8f0',
       stroke: '#000000',
       strokeThickness: 1,
-    }).setOrigin(0.5);
-
-    this.mapPanelStatusText = this.add.text(0, 88, '', {
+    }).setOrigin(0, 0.5);
+    this.mapPanelRewardValueText = this.add.text(40, -18, '', {
       fontFamily: 'monospace',
       fontSize: '13px',
-      color: '#fde68a',
-      align: 'center',
+      color: '#e2e8f0',
       stroke: '#000000',
       strokeThickness: 1,
-    }).setOrigin(0.5);
+    }).setOrigin(0, 0.5);
+    this.mapPanelScaleValueText = this.add.text(40, 12, '', {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#e2e8f0',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0, 0.5);
+    this.mapPanelProgressValueText = this.add.text(40, 42, '', {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#cbd5e1',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0, 0.5);
 
-    this.mapPanelHintText = this.add.text(0, 168, '', {
+    this.mapPanelStatusText = this.add.text(-352, 154, '', {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#86efac',
+      stroke: '#000000',
+      strokeThickness: 1,
+      backgroundColor: 'rgba(15,118,110,0.20)',
+      padding: { x: 8, y: 4 },
+    }).setOrigin(0, 0.5);
+
+    this.mapPanelLaunchButtonBg = this.add.rectangle(256, 154, 192, 40, 0x14532d, 0.95)
+      .setStrokeStyle(2, 0x22c55e, 0.95)
+      .setInteractive({ useHandCursor: true });
+    this.mapPanelLaunchButtonText = this.add.text(256, 154, 'Launch Expedition', {
+      fontFamily: 'monospace',
+      fontSize: '14px',
+      color: '#ecfeff',
+      stroke: '#000000',
+      strokeThickness: 1,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    this.mapPanelHintText = this.add.text(0, 204, '', {
       fontFamily: 'monospace',
       fontSize: '12px',
-      color: '#e5e7eb',
+      color: '#cbd5e1',
       align: 'center',
       stroke: '#000000',
       strokeThickness: 1,
     }).setOrigin(0.5);
 
+    const hookButtonFx = (
+      bg: Phaser.GameObjects.Rectangle,
+      label: Phaser.GameObjects.Text,
+      enabledAlpha: number,
+      disabledAlpha: number,
+    ): void => {
+      const setBaseVisual = (): void => {
+        const enabled = !!bg.input?.enabled;
+        bg.setAlpha(enabled ? enabledAlpha : disabledAlpha);
+        if (!enabled) {
+          bg.setScale(1);
+          label.setScale(1);
+        }
+      };
+      setBaseVisual();
+
+      const onOver = (): void => {
+        if (!bg.input?.enabled) return;
+        bg.setAlpha(Math.min(1, enabledAlpha + 0.08));
+        bg.setScale(1.02);
+        label.setScale(1.01);
+      };
+      const onOut = (): void => {
+        setBaseVisual();
+      };
+      const onPress = (): void => {
+        if (!bg.input?.enabled) return;
+        this.tweens.killTweensOf([bg, label]);
+        bg.setScale(0.97);
+        label.setScale(0.97);
+        this.tweens.add({
+          targets: [bg, label],
+          scaleX: 1.0,
+          scaleY: 1.0,
+          duration: 90,
+          ease: 'Quad.Out',
+        });
+      };
+
+      bg.on('pointerover', onOver);
+      bg.on('pointerout', onOut);
+      label.on('pointerover', onOver);
+      label.on('pointerout', onOut);
+      bg.on('pointerdown', onPress);
+      label.on('pointerdown', onPress);
+    };
+    hookButtonFx(this.mapPanelZonePrevButtonBg, this.mapPanelZonePrevText, 0.92, 0.55);
+    hookButtonFx(this.mapPanelZoneNextButtonBg, this.mapPanelZoneNextText, 0.92, 0.55);
+    hookButtonFx(this.mapPanelTierPrevButtonBg, this.mapPanelTierPrevText, 0.92, 0.55);
+    hookButtonFx(this.mapPanelTierNextButtonBg, this.mapPanelTierNextText, 0.92, 0.55);
+    hookButtonFx(this.mapPanelLaunchButtonBg, this.mapPanelLaunchButtonText, 0.92, 0.62);
+    hookButtonFx(this.mapPanelCloseButtonBg, this.mapPanelCloseButtonText, 0.92, 0.62);
+
+    const baseX = this.scale.width * 0.5;
+    const baseY = this.scale.height * 0.5;
+    const makeHitZone = (x: number, y: number, w: number, h: number): Phaser.GameObjects.Zone => {
+      return this.add.zone(baseX + x, baseY + y, w, h)
+        .setScrollFactor(0)
+        .setDepth(140)
+        .setInteractive({ useHandCursor: true });
+    };
+
+    this.mapPanelZonePrevHitZone = makeHitZone(-294, -48, 84, 28);
+    this.mapPanelZoneNextHitZone = makeHitZone(-198, -48, 84, 28);
+    this.mapPanelTierPrevHitZone = makeHitZone(-294, 58, 84, 28);
+    this.mapPanelTierNextHitZone = makeHitZone(-198, 58, 84, 28);
+    this.mapPanelLaunchHitZone = makeHitZone(256, 154, 198, 44);
+    this.mapPanelCloseHitZone = makeHitZone(340, -206, 32, 24);
+
+    this.mapPanelZonePrevHitZone.on('pointerover', () => this.mapPanelZonePrevButtonBg.emit('pointerover'));
+    this.mapPanelZonePrevHitZone.on('pointerout', () => this.mapPanelZonePrevButtonBg.emit('pointerout'));
+    this.mapPanelZonePrevHitZone.on('pointerdown', () => {
+      this.mapPanelZonePrevButtonBg.emit('pointerdown');
+      this.changeSelectedZone(-1);
+    });
+
+    this.mapPanelZoneNextHitZone.on('pointerover', () => this.mapPanelZoneNextButtonBg.emit('pointerover'));
+    this.mapPanelZoneNextHitZone.on('pointerout', () => this.mapPanelZoneNextButtonBg.emit('pointerout'));
+    this.mapPanelZoneNextHitZone.on('pointerdown', () => {
+      this.mapPanelZoneNextButtonBg.emit('pointerdown');
+      this.changeSelectedZone(1);
+    });
+
+    this.mapPanelTierPrevHitZone.on('pointerover', () => this.mapPanelTierPrevButtonBg.emit('pointerover'));
+    this.mapPanelTierPrevHitZone.on('pointerout', () => this.mapPanelTierPrevButtonBg.emit('pointerout'));
+    this.mapPanelTierPrevHitZone.on('pointerdown', () => {
+      this.mapPanelTierPrevButtonBg.emit('pointerdown');
+      this.changeSelectedTier(-1);
+    });
+
+    this.mapPanelTierNextHitZone.on('pointerover', () => this.mapPanelTierNextButtonBg.emit('pointerover'));
+    this.mapPanelTierNextHitZone.on('pointerout', () => this.mapPanelTierNextButtonBg.emit('pointerout'));
+    this.mapPanelTierNextHitZone.on('pointerdown', () => {
+      this.mapPanelTierNextButtonBg.emit('pointerdown');
+      this.changeSelectedTier(1);
+    });
+
+    this.mapPanelLaunchHitZone.on('pointerover', () => this.mapPanelLaunchButtonBg.emit('pointerover'));
+    this.mapPanelLaunchHitZone.on('pointerout', () => this.mapPanelLaunchButtonBg.emit('pointerout'));
+    this.mapPanelLaunchHitZone.on('pointerdown', () => {
+      this.mapPanelLaunchButtonBg.emit('pointerdown');
+      this.launchSelectedExpedition();
+    });
+
+    this.mapPanelCloseHitZone.on('pointerover', () => this.mapPanelCloseButtonBg.emit('pointerover'));
+    this.mapPanelCloseHitZone.on('pointerout', () => this.mapPanelCloseButtonBg.emit('pointerout'));
+    this.mapPanelCloseHitZone.on('pointerdown', () => {
+      this.mapPanelCloseButtonBg.emit('pointerdown');
+      this.toggleMapPanel(false);
+    });
+
     this.mapPanel.add([
-      bg,
-      title,
-      this.mapPanelTierText,
-      this.mapPanelZoneText,
-      this.mapPanelObjectiveText,
-      this.mapPanelPreviewText,
+      frame,
+      this.mapPanelTitleText,
+      this.mapPanelSubtitleText,
+      this.mapPanelCloseButtonBg,
+      this.mapPanelCloseButtonText,
+      leftTitle,
+      rightTitle,
+      zoneLabel,
+      this.mapPanelZoneValueText,
+      this.mapPanelZonePrevButtonBg,
+      this.mapPanelZonePrevText,
+      this.mapPanelZoneNextButtonBg,
+      this.mapPanelZoneNextText,
+      this.mapPanelZoneLockText,
+      tierLabel,
+      this.mapPanelTierValueText,
+      this.mapPanelTierPrevButtonBg,
+      this.mapPanelTierPrevText,
+      this.mapPanelTierNextButtonBg,
+      this.mapPanelTierNextText,
+      this.mapPanelObjectiveValueText,
+      this.mapPanelMonsterLevelValueText,
+      this.mapPanelRewardValueText,
+      this.mapPanelScaleValueText,
+      this.mapPanelProgressValueText,
       this.mapPanelStatusText,
+      this.mapPanelLaunchButtonBg,
+      this.mapPanelLaunchButtonText,
       this.mapPanelHintText,
     ]);
+
+    const disableZone = (zone: Phaser.GameObjects.Zone): void => {
+      zone.setActive(false);
+      if (zone.input) zone.input.enabled = false;
+    };
+    disableZone(this.mapPanelZonePrevHitZone);
+    disableZone(this.mapPanelZoneNextHitZone);
+    disableZone(this.mapPanelTierPrevHitZone);
+    disableZone(this.mapPanelTierNextHitZone);
+    disableZone(this.mapPanelLaunchHitZone);
+    disableZone(this.mapPanelCloseHitZone);
   }
 
   // ============================================================================
@@ -714,6 +1034,11 @@ export class HubScene extends Phaser.Scene {
       return;
     }
 
+    if (station.id === 'stash') {
+      emit('ui:stashToggle');
+      return;
+    }
+
     if (station.id === 'merchant') {
       emit('ui:merchantToggle');
       return;
@@ -728,6 +1053,26 @@ export class HubScene extends Phaser.Scene {
   private toggleMapPanel(open: boolean): void {
     this.panelOpen = open;
     this.mapPanel.setVisible(open);
+    const setZoneOpen = (zone: Phaser.GameObjects.Zone): void => {
+      zone.setActive(open);
+      if (zone.input) zone.input.enabled = open;
+    };
+    setZoneOpen(this.mapPanelZonePrevHitZone);
+    setZoneOpen(this.mapPanelZoneNextHitZone);
+    setZoneOpen(this.mapPanelTierPrevHitZone);
+    setZoneOpen(this.mapPanelTierNextHitZone);
+    setZoneOpen(this.mapPanelLaunchHitZone);
+    setZoneOpen(this.mapPanelCloseHitZone);
+    const uiScene = this.scene.get('UIScene');
+    if (uiScene?.input) {
+      // Prevent UI scene hit-areas from stealing map-device clicks.
+      uiScene.input.enabled = !open;
+    }
+    if (open) {
+      this.scene.bringToTop();
+    } else if (this.scene.isActive('UIScene')) {
+      this.scene.bringToTop('UIScene');
+    }
     if (open) {
       this.syncSelectionFromMeta();
       this.refreshMapPanel();
@@ -752,6 +1097,33 @@ export class HubScene extends Phaser.Scene {
     const zoneId = getExpeditionSelectedZoneId();
     this.selectedZoneId = zoneId;
     this.selectedTier = getExpeditionSelectedTierForZone(zoneId);
+  }
+
+  private changeSelectedTier(delta: number): void {
+    this.selectedTier = clampTier(this.selectedTier + delta);
+    if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
+      setExpeditionSelectedTierForZone(this.selectedZoneId, this.selectedTier);
+    }
+    this.refreshMapPanel();
+  }
+
+  private changeSelectedZone(delta: number): void {
+    const zones = this.getSelectableZoneIds();
+    if (zones.length <= 1) return;
+
+    const currentIdx = this.getSelectedZoneIndex();
+    const nextIdx = Phaser.Math.Clamp(currentIdx + delta, 0, zones.length - 1);
+    if (nextIdx === currentIdx) {
+      this.refreshMapPanel();
+      return;
+    }
+
+    this.selectedZoneId = zones[nextIdx];
+    if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
+      setExpeditionSelectedZoneId(this.selectedZoneId);
+      this.selectedTier = getExpeditionSelectedTierForZone(this.selectedZoneId);
+    }
+    this.refreshMapPanel();
   }
 
   private getZoneLockReason(zoneId: string): string {
@@ -787,61 +1159,79 @@ export class HubScene extends Phaser.Scene {
     const rewardXp = getExpeditionCompletionXP(this.selectedZoneId, this.selectedTier);
     const rewardGold = getExpeditionCompletionGold(this.selectedZoneId, this.selectedTier);
     const rewardChests = getExpeditionCompletionChestCount(this.selectedTier);
+    const targetKills = getExpeditionTotalBudget(this.selectedZoneId, this.selectedTier);
+    const mapSizeScale = getExpeditionMapSizeScale(this.selectedZoneId, this.selectedTier);
     const maxUnlockedTier = getExpeditionMaxTier(this.selectedZoneId);
     const status = this.getTierLockReason(this.selectedZoneId, this.selectedTier);
+    const zoneUnlocked = isExpeditionZoneUnlocked(this.selectedZoneId);
+    const tierUnlocked = zoneUnlocked && isExpeditionTierUnlocked(this.selectedZoneId, this.selectedTier);
+    const ready = zoneUnlocked && tierUnlocked;
+    const zoneIndex = this.getSelectedZoneIndex();
+    const canZonePrev = zones.length > 1 && zoneIndex > 0;
+    const canZoneNext = zones.length > 1 && zoneIndex < zones.length - 1;
+    const canTierDown = this.selectedTier > 1;
+    const canTierUp = this.selectedTier < EXPEDITION_MAX_TIER;
 
-    this.mapPanelTierText.setText(`Tier: ${this.selectedTier}`);
-    this.mapPanelZoneText.setText(`Zone: ${zone?.name ?? this.selectedZoneId}`);
-    this.mapPanelObjectiveText.setText(`Objective: ${objective}`);
-    this.mapPanelPreviewText.setText(
-      `Monster Level: ${levelMin}-${levelMax}\n` +
-      `Rewards: ${rewardXp} XP, ${rewardGold} Gold, ${rewardChests} Chests\n` +
-      `Unlocked Tier: ${maxUnlockedTier}/${EXPEDITION_MAX_TIER}`
-    );
+    const applySmallButtonState = (
+      bg: Phaser.GameObjects.Rectangle,
+      text: Phaser.GameObjects.Text,
+      hitZone: Phaser.GameObjects.Zone,
+      enabled: boolean,
+    ): void => {
+      bg.setFillStyle(enabled ? 0x1e3a8a : 0x111827, enabled ? 0.3 : 0.2);
+      bg.setStrokeStyle(1, enabled ? 0x3b82f6 : 0x334155, 0.8);
+      text.setColor(enabled ? '#93c5fd' : '#64748b');
+      if (bg.input) bg.input.enabled = enabled;
+      if (text.input) text.input.enabled = enabled;
+      if (hitZone.input) hitZone.input.enabled = enabled && this.panelOpen;
+      bg.setAlpha(enabled ? 0.92 : 0.55);
+    };
+
+    this.mapPanelZoneValueText.setText(zone?.name ?? this.selectedZoneId);
+    this.mapPanelTierValueText.setText(`T${this.selectedTier}  (Unlocked: ${maxUnlockedTier}/${EXPEDITION_MAX_TIER})`);
+    this.mapPanelZoneLockText.setText(zoneUnlocked ? '' : this.getZoneLockReason(this.selectedZoneId));
+    this.mapPanelObjectiveValueText.setText(`Objective: ${objective}`);
+    this.mapPanelMonsterLevelValueText.setText(`Monster Level: ${levelMin}-${levelMax}`);
+    this.mapPanelRewardValueText.setText(`Rewards: ${rewardXp} XP, ${rewardGold} Gold, ${rewardChests} Chests`);
+    this.mapPanelScaleValueText.setText(`Map Scale: ${(mapSizeScale * 100).toFixed(0)}%  |  Target Kills: ${targetKills}`);
+    this.mapPanelProgressValueText.setText(`Tier Progress: ${maxUnlockedTier}/${EXPEDITION_MAX_TIER}`);
     this.mapPanelStatusText.setText(status);
-    this.mapPanelStatusText.setColor(status === 'Ready' ? '#86efac' : '#fde68a');
+    this.mapPanelStatusText.setColor(ready ? '#86efac' : '#fcd34d');
+    this.mapPanelStatusText.setBackgroundColor(ready ? 'rgba(21,128,61,0.22)' : 'rgba(120,53,15,0.22)');
+    this.mapPanelLaunchButtonBg.setFillStyle(ready ? 0x14532d : 0x3f3f46, ready ? 0.95 : 0.85);
+    this.mapPanelLaunchButtonBg.setStrokeStyle(2, ready ? 0x22c55e : 0x71717a, 0.95);
+    this.mapPanelLaunchButtonText.setText(ready ? 'Launch Expedition' : 'Locked');
+    this.mapPanelLaunchButtonText.setColor(ready ? '#ecfeff' : '#d4d4d8');
+    if (this.mapPanelLaunchButtonBg.input) this.mapPanelLaunchButtonBg.input.enabled = ready;
+    if (this.mapPanelLaunchButtonText.input) this.mapPanelLaunchButtonText.input.enabled = ready;
+    if (this.mapPanelLaunchHitZone.input) this.mapPanelLaunchHitZone.input.enabled = ready && this.panelOpen;
+    this.mapPanelLaunchButtonBg.setAlpha(ready ? 0.92 : 0.62);
+
+    applySmallButtonState(this.mapPanelZonePrevButtonBg, this.mapPanelZonePrevText, this.mapPanelZonePrevHitZone, canZonePrev);
+    applySmallButtonState(this.mapPanelZoneNextButtonBg, this.mapPanelZoneNextText, this.mapPanelZoneNextHitZone, canZoneNext);
+    applySmallButtonState(this.mapPanelTierPrevButtonBg, this.mapPanelTierPrevText, this.mapPanelTierPrevHitZone, canTierDown);
+    applySmallButtonState(this.mapPanelTierNextButtonBg, this.mapPanelTierNextText, this.mapPanelTierNextHitZone, canTierUp);
+
     this.mapPanelHintText.setText(
-      'Left/Right: Tier\nUp/Down: Zone\nEnter or E: Launch Expedition\nEsc: Close'
+      'A/D or Left/Right: Tier   W/S or Up/Down: Zone   Enter/E: Launch   Esc: Close'
     );
   }
 
   private handleMapPanelInput(): void {
     if (Phaser.Input.Keyboard.JustDown(this.cursors.left) || Phaser.Input.Keyboard.JustDown(this.keyA)) {
-      this.selectedTier = clampTier(this.selectedTier - 1);
-      if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
-        setExpeditionSelectedTierForZone(this.selectedZoneId, this.selectedTier);
-      }
-      this.refreshMapPanel();
+      this.changeSelectedTier(-1);
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.cursors.right) || Phaser.Input.Keyboard.JustDown(this.keyD)) {
-      this.selectedTier = clampTier(this.selectedTier + 1);
-      if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
-        setExpeditionSelectedTierForZone(this.selectedZoneId, this.selectedTier);
-      }
-      this.refreshMapPanel();
+      this.changeSelectedTier(1);
     }
 
-    const zones = this.getSelectableZoneIds();
-
-    if (zones.length > 1 && (Phaser.Input.Keyboard.JustDown(this.cursors.up) || Phaser.Input.Keyboard.JustDown(this.keyW))) {
-      const idx = (this.getSelectedZoneIndex() - 1 + zones.length) % zones.length;
-      this.selectedZoneId = zones[idx];
-      if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
-        setExpeditionSelectedZoneId(this.selectedZoneId);
-        this.selectedTier = getExpeditionSelectedTierForZone(this.selectedZoneId);
-      }
-      this.refreshMapPanel();
+    if (Phaser.Input.Keyboard.JustDown(this.cursors.up) || Phaser.Input.Keyboard.JustDown(this.keyW)) {
+      this.changeSelectedZone(-1);
     }
 
-    if (zones.length > 1 && (Phaser.Input.Keyboard.JustDown(this.cursors.down) || Phaser.Input.Keyboard.JustDown(this.keyS))) {
-      const idx = (this.getSelectedZoneIndex() + 1) % zones.length;
-      this.selectedZoneId = zones[idx];
-      if (isExpeditionZoneUnlocked(this.selectedZoneId)) {
-        setExpeditionSelectedZoneId(this.selectedZoneId);
-        this.selectedTier = getExpeditionSelectedTierForZone(this.selectedZoneId);
-      }
-      this.refreshMapPanel();
+    if (Phaser.Input.Keyboard.JustDown(this.cursors.down) || Phaser.Input.Keyboard.JustDown(this.keyS)) {
+      this.changeSelectedZone(1);
     }
   }
 
@@ -852,12 +1242,14 @@ export class HubScene extends Phaser.Scene {
     if (!isExpeditionZoneUnlocked(zoneId)) {
       this.mapPanelStatusText.setText(this.getZoneLockReason(zoneId));
       this.mapPanelStatusText.setColor('#fca5a5');
+      this.mapPanelStatusText.setBackgroundColor('rgba(127,29,29,0.28)');
       return;
     }
 
     if (!isExpeditionTierUnlocked(zoneId, tier)) {
       this.mapPanelStatusText.setText(this.getTierLockReason(zoneId, tier));
       this.mapPanelStatusText.setColor('#fca5a5');
+      this.mapPanelStatusText.setBackgroundColor('rgba(127,29,29,0.28)');
       return;
     }
 
@@ -865,6 +1257,7 @@ export class HubScene extends Phaser.Scene {
     if (!run) {
       this.mapPanelStatusText.setText('Unable to launch expedition');
       this.mapPanelStatusText.setColor('#fca5a5');
+      this.mapPanelStatusText.setBackgroundColor('rgba(127,29,29,0.28)');
       return;
     }
 
@@ -877,6 +1270,23 @@ export class HubScene extends Phaser.Scene {
     }
 
     this.scene.sleep();
+  }
+
+  private onPointerDown(pointer: Phaser.Input.Pointer): void {
+    if (!this.panelOpen) return;
+    if (this.isPointInsideMapPanel(pointer.x, pointer.y)) return;
+    this.toggleMapPanel(false);
+  }
+
+  private isPointInsideMapPanel(px: number, py: number): boolean {
+    const cx = this.scale.width * 0.5;
+    const cy = this.scale.height * 0.5;
+    const left = cx - MAP_PANEL_FRAME_W / 2;
+    const top = cy - MAP_PANEL_FRAME_H / 2;
+    return (
+      px >= left && px <= left + MAP_PANEL_FRAME_W &&
+      py >= top && py <= top + MAP_PANEL_FRAME_H
+    );
   }
 
   private onWakeFromExpedition(): void {

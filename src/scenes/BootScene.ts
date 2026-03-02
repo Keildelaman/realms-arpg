@@ -99,5 +99,12 @@ export class BootScene extends Phaser.Scene {
     lootGfx.fillTriangle(8, 0, 0, 8, 8, 16);
     lootGfx.generateTexture('loot_bag', 16, 16);
     lootGfx.destroy();
+
+    // Gold coin — small amber circle
+    const goldGfx = this.add.graphics();
+    goldGfx.fillStyle(0xfcd34d);
+    goldGfx.fillCircle(6, 6, 6);
+    goldGfx.generateTexture('gold_coin', 12, 12);
+    goldGfx.destroy();
   }
 }

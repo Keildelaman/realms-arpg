@@ -6,6 +6,7 @@ import Phaser from 'phaser';
 import type { ProjectileInstance, MonsterInstance } from '@/core/types';
 import { getState } from '@/core/game-state';
 import { emit } from '@/core/event-bus';
+import { SEEKER_HOMING_TURN_RATE, SEEKER_HOMING_RANGE } from '@/data/constants';
 
 export class Projectile {
   sprite: Phaser.Physics.Arcade.Sprite;
@@ -101,6 +102,11 @@ export class Projectile {
     if (this.data.distanceTraveled >= this.data.maxDistance) {
       this.data.isExpired = true;
       emit('projectile:expired', { projectileId: this.data.id });
+      emit('projectile:expiredWithPosition', {
+        projectileId: this.data.id,
+        x: this.data.x,
+        y: this.data.y,
+      });
     }
 
     // Check if out of world bounds
@@ -122,12 +128,15 @@ export class Projectile {
     if (outOfBounds) {
       this.data.isExpired = true;
       emit('projectile:expired', { projectileId: this.data.id });
+      emit('projectile:expiredWithPosition', {
+        projectileId: this.data.id,
+        x: this.data.x,
+        y: this.data.y,
+      });
     }
   }
 
   private handleHoming(): void {
-    // Only homing for skills that use 'nearest' targeting
-    // Check if this projectile has a skill with nearest targeting
     if (!this.data.skillId) return;
 
     const state = getState();
@@ -153,8 +162,9 @@ export class Projectile {
 
     if (!nearest) return;
 
-    // Only home if within a reasonable range (300px)
-    if (nearestDistSq > 300 * 300) return;
+    // Persistent homing: wider range + faster turn rate
+    const maxRange = this.data.persistentHoming ? SEEKER_HOMING_RANGE : 300;
+    if (nearestDistSq > maxRange * maxRange) return;
 
     // Smoothly adjust velocity toward target
     const targetAngle = Math.atan2(
@@ -168,8 +178,7 @@ export class Projectile {
     while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
     while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
 
-    // Turn rate: 3 radians/sec
-    const turnRate = 3.0;
+    const turnRate = this.data.persistentHoming ? SEEKER_HOMING_TURN_RATE : 3.0;
     const maxTurn = turnRate * (1 / 60); // approximate dt
     const actualTurn = Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), maxTurn);
 

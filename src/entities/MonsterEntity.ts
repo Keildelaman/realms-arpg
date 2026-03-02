@@ -3,7 +3,7 @@
 // ============================================================================
 
 import Phaser from 'phaser';
-import type { MonsterInstance, DamageType, MonsterRarity } from '@/core/types';
+import type { MonsterInstance, DamageType, MonsterRarity, EnemyStateType } from '@/core/types';
 import { getMonsterById } from '@/core/game-state';
 import { on, off } from '@/core/event-bus';
 import {
@@ -44,6 +44,10 @@ export class MonsterEntity {
   private animTimer: number = 0;
   private isMoving: boolean = false;
   private stopSquashTimer: number = 0;
+
+  // Enemy state overlay
+  private stateOverlayGfx: Phaser.GameObjects.Graphics;
+  private staggerTween: Phaser.Tweens.Tween | null = null;
 
   constructor(scene: Phaser.Scene, monster: MonsterInstance) {
     this.scene = scene;
@@ -156,8 +160,13 @@ export class MonsterEntity {
     this.prevX = monster.x;
     this.prevY = monster.y;
 
-    // Listen for knockback events
+    // Enemy state overlay graphics
+    this.stateOverlayGfx = scene.add.graphics();
+    this.stateOverlayGfx.setDepth(6);
+
+    // Listen for knockback and enemy state events
     on('combat:knockback', this.onKnockback);
+    on('enemyState:applied', this.onEnemyStateApplied);
   }
 
   update(dt: number): void {
@@ -321,7 +330,137 @@ export class MonsterEntity {
 
       this.sprite.setRotation(0);
     }
+
+    // --- Enemy state overlays ---
+    this.updateEnemyStateOverlays(monster);
   }
+
+  // --- Enemy state overlay rendering ---
+
+  private updateEnemyStateOverlays(monster: MonsterInstance): void {
+    this.stateOverlayGfx.clear();
+
+    if (monster.isDead || !monster.enemyStates || monster.enemyStates.length === 0) return;
+
+    const hasSundered = monster.enemyStates.some(s => s.type === 'sundered' && s.duration > 0);
+    const hasCharged = monster.enemyStates.some(s => s.type === 'charged' && s.duration > 0);
+
+    const mx = monster.x;
+    const my = monster.y;
+    const half = monster.size * 0.5;
+
+    // Sundered: cracked overlay lines + dust particles
+    if (hasSundered) {
+      this.stateOverlayGfx.lineStyle(1, 0x8b7355, 0.6);
+
+      // 3 deterministic "crack" lines across the monster
+      this.stateOverlayGfx.beginPath();
+      this.stateOverlayGfx.moveTo(mx - half * 0.6, my - half * 0.3);
+      this.stateOverlayGfx.lineTo(mx + half * 0.2, my + half * 0.5);
+      this.stateOverlayGfx.strokePath();
+
+      this.stateOverlayGfx.beginPath();
+      this.stateOverlayGfx.moveTo(mx + half * 0.5, my - half * 0.5);
+      this.stateOverlayGfx.lineTo(mx - half * 0.1, my + half * 0.3);
+      this.stateOverlayGfx.strokePath();
+
+      this.stateOverlayGfx.beginPath();
+      this.stateOverlayGfx.moveTo(mx - half * 0.2, my - half * 0.6);
+      this.stateOverlayGfx.lineTo(mx + half * 0.4, my + half * 0.1);
+      this.stateOverlayGfx.strokePath();
+
+      // Fading dust particles (1 per 0.5s)
+      const dustPhase = Math.floor(this.animTimer * 2) % 2;
+      if (dustPhase === 0) {
+        const dustAngle = this.animTimer * 3.7;
+        const dustX = mx + Math.cos(dustAngle) * half * 0.4;
+        const dustY = my + half * 0.3;
+        this.stateOverlayGfx.fillStyle(0x8b7355, 0.3 + 0.2 * Math.sin(this.animTimer * 5));
+        this.stateOverlayGfx.fillCircle(dustX, dustY, 1.5);
+      }
+    }
+
+    // Charged: electricity arcs + blue sparks
+    if (hasCharged) {
+      const chargedStacks = monster.enemyStates
+        .filter(s => s.type === 'charged' && s.duration > 0)
+        .reduce((sum, s) => sum + s.stacks, 0);
+
+      this.stateOverlayGfx.lineStyle(1, 0x60a5fa, 0.7);
+
+      // Draw 2-3 jagged lightning arc segments
+      const arcCount = Math.min(chargedStacks, 3);
+      for (let i = 0; i < arcCount; i++) {
+        const baseAngle = (i / arcCount) * Math.PI * 2 + this.animTimer * 4;
+        const startR = half * 0.3;
+        const endR = half * 0.9;
+
+        this.stateOverlayGfx.beginPath();
+        const sx = mx + Math.cos(baseAngle) * startR;
+        const sy = my + Math.sin(baseAngle) * startR;
+        this.stateOverlayGfx.moveTo(sx, sy);
+
+        // 2-3 jagged mid-points
+        const segments = 2 + (i % 2);
+        for (let j = 1; j <= segments; j++) {
+          const t = j / (segments + 1);
+          const jitterAngle = baseAngle + (Math.sin(this.animTimer * 12 + i * 7 + j * 3) * 0.4);
+          const r = startR + (endR - startR) * t;
+          const jx = mx + Math.cos(jitterAngle) * r;
+          const jy = my + Math.sin(jitterAngle) * r;
+          this.stateOverlayGfx.lineTo(jx, jy);
+        }
+
+        const ex = mx + Math.cos(baseAngle + 0.3) * endR;
+        const ey = my + Math.sin(baseAngle + 0.3) * endR;
+        this.stateOverlayGfx.lineTo(ex, ey);
+        this.stateOverlayGfx.strokePath();
+      }
+
+      // Small blue spark dots orbiting
+      for (let i = 0; i < chargedStacks; i++) {
+        const sparkAngle = this.animTimer * 5 + (i / chargedStacks) * Math.PI * 2;
+        const sparkR = half * 0.8;
+        const sparkX = mx + Math.cos(sparkAngle) * sparkR;
+        const sparkY = my + Math.sin(sparkAngle) * sparkR;
+        this.stateOverlayGfx.fillStyle(0x93c5fd, 0.8);
+        this.stateOverlayGfx.fillCircle(sparkX, sparkY, 1.5);
+      }
+    }
+  }
+
+  // --- Stagger tilt animation (triggered by event) ---
+
+  private onEnemyStateApplied = (data: {
+    monsterId: string;
+    type: EnemyStateType;
+    stacks: number;
+    duration: number;
+  }): void => {
+    if (data.monsterId !== this.monsterId) return;
+
+    if (data.type === 'staggered') {
+      // Cancel existing stagger tween
+      if (this.staggerTween) {
+        this.staggerTween.stop();
+        this.sprite.setRotation(0);
+        this.staggerTween = null;
+      }
+
+      // Brief tilt animation: rotate ~10 degrees, hold, return
+      this.staggerTween = this.scene.tweens.add({
+        targets: this.sprite,
+        rotation: 0.17, // ~10 degrees
+        duration: 100,
+        yoyo: true,
+        hold: 200,
+        onComplete: () => {
+          this.sprite.setRotation(0);
+          this.staggerTween = null;
+        },
+      });
+    }
+  };
 
   private drawHPBar(monster: MonsterInstance): void {
     // Clear previous drawings
@@ -435,6 +574,10 @@ export class MonsterEntity {
       this.impactScaleTween.stop();
       this.impactScaleTween = null;
     }
+    if (this.staggerTween) {
+      this.staggerTween.stop();
+      this.staggerTween = null;
+    }
 
     // Hide HP bar immediately
     this.hpBarBg.setVisible(false);
@@ -445,6 +588,7 @@ export class MonsterEntity {
       this.windupIndicator.destroy();
       this.windupIndicator = null;
     }
+    this.stateOverlayGfx.setVisible(false);
   }
 
   /** Red circle grows during aggressive windup */
@@ -543,6 +687,7 @@ export class MonsterEntity {
 
   destroy(): void {
     off('combat:knockback', this.onKnockback);
+    off('enemyState:applied', this.onEnemyStateApplied);
 
     if (this.knockbackTween) {
       this.knockbackTween.stop();
@@ -552,12 +697,17 @@ export class MonsterEntity {
       this.impactScaleTween.stop();
       this.impactScaleTween = null;
     }
+    if (this.staggerTween) {
+      this.staggerTween.stop();
+      this.staggerTween = null;
+    }
 
     this.hpBarBg.destroy();
     this.hpBar.destroy();
     if (this.shieldBar) this.shieldBar.destroy();
     if (this.nameText) this.nameText.destroy();
     if (this.windupIndicator) this.windupIndicator.destroy();
+    this.stateOverlayGfx.destroy();
     this.sprite.destroy();
   }
 }

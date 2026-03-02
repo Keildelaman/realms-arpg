@@ -4,6 +4,7 @@ import { on, emit } from '@/core/event-bus';
 import type { MonsterInstance, ProjectileInstance, ExpeditionMap } from '@/core/types';
 import { ZONES } from '@/data/zones.data';
 import { MONSTERS } from '@/data/monsters.data';
+import { SKILLS } from '@/data/skills.data';
 import { CAMERA_LERP } from '@/data/constants';
 
 // Systems
@@ -26,6 +27,8 @@ import * as monsterAI from '@/systems/monster-ai';
 import * as monsterAbilities from '@/systems/monster-abilities';
 import * as zones from '@/systems/zones';
 import * as expeditions from '@/systems/expeditions';
+import * as resonance from '@/systems/resonance';
+import * as playerStates from '@/systems/player-states';
 
 // Entities
 import { PlayerEntity } from '@/entities/PlayerEntity';
@@ -36,6 +39,7 @@ import { VFXManager } from '@/entities/VFXManager';
 // UI (damage numbers rendered in world space)
 import { DamageNumberManager } from '@/ui/DamageNumber';
 import { StatusIcons } from '@/ui/StatusIcons';
+import { LootVFX } from '@/ui/LootVFX';
 
 export class GameScene extends Phaser.Scene {
   private static systemsInitialized = false;
@@ -43,7 +47,7 @@ export class GameScene extends Phaser.Scene {
   private playerEntity!: PlayerEntity;
   private monsterEntities: Map<string, MonsterEntity> = new Map();
   private projectileEntities: Map<string, Projectile> = new Map();
-  private lootSprites: Map<string, Phaser.GameObjects.Sprite> = new Map();
+  private lootVFX!: LootVFX;
   private damageNumbers!: DamageNumberManager;
   private statusIcons!: StatusIcons;
   private vfxManager!: VFXManager;
@@ -60,8 +64,8 @@ export class GameScene extends Phaser.Scene {
   private keyS!: Phaser.Input.Keyboard.Key;
   private keyD!: Phaser.Input.Keyboard.Key;
   private keyE!: Phaser.Input.Keyboard.Key;
+  private keyQ!: Phaser.Input.Keyboard.Key;
   private keySpace!: Phaser.Input.Keyboard.Key;
-  private skillKeys!: Phaser.Input.Keyboard.Key[];
   private extractionPortalGraphics: Phaser.GameObjects.Graphics | null = null;
   private extractionPromptText: Phaser.GameObjects.Text | null = null;
   private chestGraphicsById: Map<string, Phaser.GameObjects.Graphics> = new Map();
@@ -97,6 +101,8 @@ export class GameScene extends Phaser.Scene {
       monsterAbilities.init();
       zones.init();
       expeditions.init();
+      resonance.init();
+      playerStates.init();
 
       // --- Inject loot generators (avoids system-to-system imports) ---
       loot.setItemGenerators(
@@ -124,6 +130,7 @@ export class GameScene extends Phaser.Scene {
 
     // --- VFX Manager ---
     this.vfxManager = new VFXManager(this);
+    this.lootVFX = new LootVFX(this);
 
     // --- Input ---
     this.cursors = this.input.keyboard!.createCursorKeys();
@@ -132,20 +139,8 @@ export class GameScene extends Phaser.Scene {
     this.keyS = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S);
     this.keyD = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D);
     this.keyE = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+    this.keyQ = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
     this.keySpace = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-    this.skillKeys = [
-      this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ONE),
-      this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TWO),
-      this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.THREE),
-      this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.FOUR),
-    ];
-
-    // Skill key bindings — keys 1-4 map to slots 2-5
-    this.skillKeys.forEach((key, index) => {
-      key.on('down', () => {
-        this.activateSlotSkill(index + 2);
-      });
-    });
 
     // RMB handling
     this.game.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -214,18 +209,6 @@ export class GameScene extends Phaser.Scene {
       if (entity) {
         entity.destroy();
         this.projectileEntities.delete(data.projectileId);
-      }
-    });
-
-    on('loot:spawned', (data) => {
-      this.createLootSprite(data.item.id, data.x, data.y);
-    });
-
-    on('item:pickedUp', (data) => {
-      const sprite = this.lootSprites.get(data.item.id);
-      if (sprite) {
-        sprite.destroy();
-        this.lootSprites.delete(data.item.id);
       }
     });
 
@@ -337,15 +320,17 @@ export class GameScene extends Phaser.Scene {
 
     // --- Auto-unlock and equip starter skills ---
     skills.unlockSkill('basic_attack');
-    skills.equipSkill('basic_attack', 0);
+    skills.equipSkill('basic_attack', 0);    // LMB
     skills.unlockSkill('heavy_slash');
+    skills.equipSkill('heavy_slash', 1);     // RMB
+    skills.unlockSkill('arcane_bolt');
+    skills.equipSkill('arcane_bolt', 2);     // Q
     skills.unlockSkill('shadow_step');
-    skills.equipSkill('heavy_slash', 2);
-    skills.equipSkill('shadow_step', 5);
+    skills.equipSkill('shadow_step', 3);     // E
 
     // --- Welcome toast ---
     const p = getPlayer();
-    const toast = this.add.text(p.x, p.y - 50, 'LMB: Attack | 1: Heavy Slash | 4: Dash | Space: Dodge | Tab: Inventory', {
+    const toast = this.add.text(p.x, p.y - 50, 'LMB: Attack | RMB: Heavy Slash | Q: Arcane Bolt | E: Shadow Step | Space: Dodge', {
       fontFamily: 'monospace',
       fontSize: '14px',
       color: '#ffffff',
@@ -360,6 +345,45 @@ export class GameScene extends Phaser.Scene {
       delay: 4000,
       duration: 1000,
       onComplete: () => toast.destroy(),
+    });
+
+    // --- First-use celebration ---
+    on('skill:used', (data) => {
+      const player = getPlayer();
+      if (data.skillId === 'basic_attack') return;
+      if (player.firstUseShown[data.skillId]) return;
+      player.firstUseShown[data.skillId] = true;
+
+      // Time slow: 30% speed for 0.3s
+      this.time.timeScale = 0.3;
+      this.time.delayedCall(300, () => {
+        this.time.timeScale = 1.0;
+      });
+
+      // Gold text center-screen for 1.0s
+      const skillDef = SKILLS[data.skillId];
+      if (!skillDef) return;
+      const cx = this.cameras.main.scrollX + this.cameras.main.width / 2;
+      const cy = this.cameras.main.scrollY + this.cameras.main.height / 2;
+      const nameText = this.add
+        .text(cx, cy, skillDef.name, {
+          fontFamily: 'monospace',
+          fontSize: '28px',
+          color: '#fbbf24',
+          stroke: '#000000',
+          strokeThickness: 4,
+        })
+        .setOrigin(0.5)
+        .setDepth(200);
+
+      this.tweens.add({
+        targets: nameText,
+        alpha: 0,
+        y: cy - 30,
+        delay: 700,
+        duration: 300,
+        onComplete: () => nameText.destroy(),
+      });
     });
 
     // --- Launch UI overlay ---
@@ -385,6 +409,11 @@ export class GameScene extends Phaser.Scene {
       this.activateSlotSkill(0);
     }
 
+    // --- Q → slot 2 ---
+    if (Phaser.Input.Keyboard.JustDown(this.keyQ)) {
+      this.activateSlotSkill(2);
+    }
+
     // --- Update all systems ---
     movement.update(dt);
     combat.update(dt);
@@ -404,6 +433,8 @@ export class GameScene extends Phaser.Scene {
     monsterAI.update(dt);
     expeditions.update(dt);
     zones.update(dt);
+    resonance.update(dt);
+    playerStates.update(dt);
 
     // --- Update entities ---
     this.playerEntity.update(dt);
@@ -448,26 +479,9 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Sync loot sprites
-    const activeDrops = loot.getActiveLootDrops();
-    for (const drop of activeDrops) {
-      if (!this.lootSprites.has(drop.item.id) && !drop.isPickedUp) {
-        this.createLootSprite(drop.item.id, drop.x, drop.y);
-      }
-      // Update loot position (magnet effect moves them)
-      const sprite = this.lootSprites.get(drop.item.id);
-      if (sprite && !drop.isPickedUp) {
-        sprite.setPosition(drop.x, drop.y);
-      }
-    }
-    // Clean up picked-up loot sprites
-    const activeLootIds = new Set(activeDrops.filter(d => !d.isPickedUp).map(d => d.item.id));
-    for (const [id, sprite] of this.lootSprites) {
-      if (!activeLootIds.has(id)) {
-        sprite.destroy();
-        this.lootSprites.delete(id);
-      }
-    }
+    // Sync loot and gold VFX
+    this.lootVFX.syncDrops(loot.getActiveLootDrops(), loot.getActiveGoldDrops());
+    this.lootVFX.update(dt);
 
     // --- Update telegraphs ---
     for (const [id, telegraph] of this.activeTelegraphs) {
@@ -549,21 +563,6 @@ export class GameScene extends Phaser.Scene {
     return entity;
   }
 
-  private createLootSprite(itemId: string, x: number, y: number): void {
-    if (this.lootSprites.has(itemId)) return;
-    const sprite = this.add.sprite(x, y, 'loot_bag').setDepth(5);
-    // Gentle bob animation
-    this.tweens.add({
-      targets: sprite,
-      y: y - 4,
-      duration: 800,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    });
-    this.lootSprites.set(itemId, sprite);
-  }
-
   private ensureExtractionPortalVisuals(): void {
     if (!this.extractionPortalGraphics) {
       this.extractionPortalGraphics = this.add.graphics().setDepth(6);
@@ -578,7 +577,7 @@ export class GameScene extends Phaser.Scene {
         backgroundColor: 'rgba(0,0,0,0.45)',
         padding: { x: 8, y: 4 },
       })
-        .setScrollFactor(0)
+        .setOrigin(0.5, 1)
         .setDepth(120)
         .setVisible(false);
     }
@@ -667,7 +666,9 @@ export class GameScene extends Phaser.Scene {
     if (!this.extractionPromptText) return;
 
     const player = getPlayer();
-    const pressedInteract = Phaser.Input.Keyboard.JustDown(this.keyE);
+    const pressedE = Phaser.Input.Keyboard.JustDown(this.keyE);
+    let eConsumed = false;
+
     const openableChests = expeditions.getActiveChests();
     let nearestChest: (typeof openableChests)[number] | null = null;
     let nearestChestDistSq = Infinity;
@@ -682,16 +683,14 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (nearestChest) {
-      if (pressedInteract) {
+      if (pressedE) {
         expeditions.openChest(nearestChest.id);
+        eConsumed = true;
       }
       const rarityLabel = nearestChest.rarity.charAt(0).toUpperCase() + nearestChest.rarity.slice(1);
       this.extractionPromptText.setVisible(true);
       this.extractionPromptText.setText(`Press E: Open ${rarityLabel} Chest`);
-      this.extractionPromptText.setPosition(
-        (this.scale.width - this.extractionPromptText.width) * 0.5,
-        26,
-      );
+      this.extractionPromptText.setPosition(nearestChest.x, nearestChest.y - 30);
     } else {
       this.extractionPromptText.setVisible(false);
     }
@@ -700,6 +699,10 @@ export class GameScene extends Phaser.Scene {
     if (!portal) {
       if (this.extractionPortalGraphics) {
         this.extractionPortalGraphics.clear();
+      }
+      // E not consumed by interaction → fire skill slot 3
+      if (pressedE && !eConsumed) {
+        this.activateSlotSkill(3);
       }
       return;
     }
@@ -728,21 +731,24 @@ export class GameScene extends Phaser.Scene {
     }
 
     const canUse = expeditions.canUseExtractionPortal(player.x, player.y);
-    if (!nearestChest && canUse && pressedInteract) {
+    if (!nearestChest && canUse && pressedE && !eConsumed) {
       const used = expeditions.useExtractionPortal();
       if (used) {
-        // Extraction can destroy prompt/graphics via returnHub event in the same frame.
         return;
       }
+      eConsumed = true;
     }
 
     if (!nearestChest && canUse) {
       this.extractionPromptText.setVisible(true);
       this.extractionPromptText.setText('Press E: Return to Hub');
-      this.extractionPromptText.setPosition(
-        (this.scale.width - this.extractionPromptText.width) * 0.5,
-        26,
-      );
+      this.extractionPromptText.setPosition(portal.x, portal.y - 60);
+      eConsumed = true; // near portal prompt → don't fire skill
+    }
+
+    // E not consumed by any interaction → fire skill slot 3
+    if (pressedE && !eConsumed) {
+      this.activateSlotSkill(3);
     }
   }
 
@@ -1125,10 +1131,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.projectileEntities.clear();
 
-    for (const [, sprite] of this.lootSprites) {
-      sprite.destroy();
-    }
-    this.lootSprites.clear();
+    this.lootVFX.clearAll();
     this.clearChestVisuals();
 
     for (const [, telegraph] of this.activeTelegraphs) {
