@@ -96,6 +96,69 @@ export type Direction = 'up' | 'down' | 'left' | 'right';
 
 export type AttackPhase = 'none' | 'windup' | 'swing' | 'followthrough';
 export type GameMode = 'hub' | 'expedition';
+
+// --- Resonance ---
+export type ResonanceType = 'ash' | 'ember';
+
+export interface ResonanceState {
+  ash: number;     // 0–5
+  ember: number;   // 0–5
+  decayTimer: number; // seconds since last charge gained
+  dualityActive: boolean;
+  flowReleaseBoost: boolean; // flow_state passive: +30% dmg, +20% radius on release
+}
+
+// --- Enemy States ---
+export type EnemyStateType = 'sundered' | 'charged' | 'staggered';
+
+export interface EnemyStateInstance {
+  type: EnemyStateType;
+  stacks: number;
+  duration: number;   // remaining seconds
+}
+
+// --- Player Combat States ---
+export interface PlayerCombatStates {
+  flow: boolean;
+  flowHitCount: number;     // consecutive hits counter
+  flowTimer: number;         // seconds since last hit (resets on hit)
+  wrath: boolean;
+  primed: boolean;
+  primedMultiplier: number;  // 1.25 default
+  wrathBonusExtra: number;   // blood_price stacking bonus (0–0.35)
+  guaranteeStateApply: boolean; // shadow_reflexes empowered window
+}
+
+// --- Skill Upgrades ---
+export interface SkillUpgradeState {
+  pathChoice: 'A' | 'B' | 'C' | null;
+  tier: 0 | 1 | 2;
+}
+
+/** A single upgrade path option (tier 1 or tier 2) */
+export interface SkillUpgradePathDef {
+  id: string;                    // e.g. 'heavy_slash_ravager'
+  name: string;                  // e.g. 'Ravager'
+  description: string;           // flavor text
+  detailedDescription: string;   // mechanical description (shown in Codex)
+  tier: 1 | 2;                  // 1 = fork choice, 2 = awakening
+  spCost: number;                // 1 for tier 1, 2 for tier 2
+  path: 'A' | 'B' | 'C';
+  statOverrides?: Partial<SkillLevelData>;
+  flags?: Record<string, number | boolean | string>;
+}
+
+/** Full upgrade tree for an active skill */
+export interface SkillUpgradeTree {
+  tier1: { A: SkillUpgradePathDef; B: SkillUpgradePathDef; C: SkillUpgradePathDef };
+  tier2: { A: SkillUpgradePathDef; B: SkillUpgradePathDef; C: SkillUpgradePathDef };
+}
+
+// --- Skill Unlock Conditions ---
+export interface SkillUnlockCondition {
+  type: 'level' | 'boss' | 'usageCount' | 'stat';
+  value: string | number;
+}
 export type ObjectiveType =
   | 'extermination'
   | 'sweep'
@@ -163,6 +226,12 @@ export interface SkillDefinition {
 
   // Passive properties
   passiveEffect?: string; // identifier for the passive handler
+
+  // Unlock condition (new skill system)
+  unlockCondition?: SkillUnlockCondition;
+
+  // Upgrade fork tree (active skills only)
+  upgradeTree?: SkillUpgradeTree;
 }
 
 export interface MonsterDefinition {
@@ -176,6 +245,7 @@ export interface MonsterDefinition {
   hpPerLevel: number;
   attack: number;
   defense: number;
+  magicResist?: number;      // magic damage mitigation (optional, defaults to 0)
 
   // Behavior
   moveSpeed: number;
@@ -186,7 +256,8 @@ export interface MonsterDefinition {
   // Type-specific
   armor?: number;            // flat damage reduction (armored)
   shieldPercent?: number;    // % of HP as shield (shielded)
-  shieldDamageReduction?: number;
+  shieldDamageReduction?: number; // kept for backward compat, now ignored in formula
+  statusImmunities?: StatusEffectType[]; // innate status immunities
   regenRate?: number;        // % maxHP/sec (regenerating)
   escapeThreshold?: number;  // HP% to start fleeing (swift)
   escapeSpeed?: number;      // speed multiplier when fleeing
@@ -525,6 +596,35 @@ export interface ActiveTelegraph {
   elapsed: number;
 }
 
+// --- Environmental Zones ---
+
+export interface EnvironmentalZone {
+  id: string;
+  type: 'aftershock'; // future: 'consecration', 'miasma', etc.
+  x: number;
+  y: number;
+  radius: number;
+  duration: number;
+  elapsed: number;
+  tickTimer: number;
+  damagePerTick: number;
+  damageType: DamageType;
+}
+
+// --- Stash ---
+
+export interface StashTab {
+  id: string;
+  name: string;
+  color: number;              // 0xRRGGBB hex
+  items: (ItemInstance | null)[];
+}
+
+export interface StashState {
+  tabs: StashTab[];
+  activeTabIndex: number;
+}
+
 // --- Runtime Instances (mutable game state) ---
 
 export interface PlayerState {
@@ -548,6 +648,7 @@ export interface PlayerState {
   baseCritDamage: number;
   baseMoveSpeed: number;
   baseAttackSpeed: number;
+  baseMagicResist: number;
 
   // Computed stats (after equipment + passives + buffs)
   attack: number;
@@ -570,12 +671,28 @@ export interface PlayerState {
 
   // Equipment-derived secondary stats (wired in player.ts recalculateStats)
   armorPen: number;         // reduces enemy effective defense (0-1 fraction)
+  magicPen: number;         // reduces enemy effective magicResist (0-0.9 cap)
+  magicResist: number;      // player magic damage mitigation
   hpRegen: number;          // % of maxHP restored per second
   dodgeChance: number;      // chance to avoid damage entirely (0-1 fraction)
   damageReduction: number;  // % of incoming damage reduced (0-0.75 cap)
   energyRegen: number;      // bonus energy per second multiplier
   goldFind: number;         // gold drop multiplier (additive)
   xpBonus: number;          // XP gain multiplier (additive)
+  lifeSteal: number;        // % of physical damage healed (0-0.20 cap)
+  spellLeech: number;       // % of magic damage healed (0-0.20 cap)
+
+  // Resonance
+  resonance: ResonanceState;
+
+  // Combat states
+  combatStates: PlayerCombatStates;
+
+  // Skill upgrades (Phase 2)
+  skillUpgrades: Record<string, SkillUpgradeState>;
+
+  // Usage tracking (for unlock conditions)
+  skillUsageCounts: Record<string, number>;
 
   // Skill category damage multipliers
   skillPowerBoost: number;
@@ -601,7 +718,8 @@ export interface PlayerState {
 
   // Equipment
   equipment: Record<EquipmentSlot, ItemInstance | null>;
-  inventory: ItemInstance[];
+  inventory: (ItemInstance | null)[];
+  stash: StashState;
 
   // Position (synced with entity)
   x: number;
@@ -620,6 +738,7 @@ export interface PlayerState {
   // Combat state
   isAttacking: boolean;
   isDashing: boolean;
+  isStealth: boolean;        // Death's Shadow: enemies deaggro, next hit empowered
   isInvulnerable: boolean;
   lastAttackTime: number;
   basicAttackCooldown: number;
@@ -635,6 +754,9 @@ export interface PlayerState {
   totalDamageDealt: number;
   totalGoldEarned: number;
   bossesKilled: string[]; // boss IDs
+
+  // First-use celebration tracking
+  firstUseShown: Record<string, boolean>;
 }
 
 export interface MonsterInstance {
@@ -651,9 +773,10 @@ export interface MonsterInstance {
 
   // Type-specific runtime
   armor: number;
+  magicResist: number;
   currentShield: number;
   maxShield: number;
-  shieldDamageReduction: number;
+  statusImmunities: StatusEffectType[];
 
   // AI state
   aiState: MonsterAIState;
@@ -734,6 +857,9 @@ export interface MonsterInstance {
 
   // Visual
   shape: 'circle' | 'diamond' | 'triangle' | 'square' | 'hexagon';
+
+  // Enemy states (sundered, charged, staggered)
+  enemyStates: EnemyStateInstance[];
 }
 
 export interface ProjectileInstance {
@@ -768,6 +894,12 @@ export interface ProjectileInstance {
   // Visual
   color: string;
   size: number;
+
+  // Arcane Bolt upgrade fields
+  persistentHoming?: boolean;      // Seeker: aggressive real-time tracking
+  piercingHitCount?: number;       // Unstable Bolt: tracks how many targets pierced
+  piercingDamageScale?: number;    // Chain Reaction: accumulated multiplicative damage bonus
+  hitSunderedTarget?: boolean;     // Chain Reaction: any pierced target had Sundered?
 }
 
 export interface ItemInstance {
@@ -838,6 +970,8 @@ export interface GameState {
   // UI state
   inventoryOpen: boolean;
   merchantOpen: boolean;
+  stashOpen: boolean;
+  codexOpen: boolean;
   selectedInventorySlot: number;
 }
 
@@ -866,6 +1000,7 @@ export type GameEventMap = {
     damageType: DamageType;
     x: number;
     y: number;
+    source?: string;  // 'skill' | 'resonance' | 'basic' | undefined
   };
   'combat:monsterAttack': { monsterId: string; damage: number };
   'combat:miss': { targetId: string; x: number; y: number };
@@ -882,6 +1017,7 @@ export type GameEventMap = {
     isCrit: boolean;
     damageType: DamageType;
     targetId: string;
+    source?: string;  // 'skill' | 'resonance' | 'basic' | undefined
   };
   'combat:knockback': {
     targetId: string;
@@ -921,6 +1057,7 @@ export type GameEventMap = {
   'skill:levelUp': { skillId: string; newLevel: number };
   'skill:buffApplied': { skillId: string; duration: number };
   'skill:buffExpired': { skillId: string };
+  'skill:spGained': { amount: number; source: 'level' | 'boss' | 'codex_drop' };
 
   // Status effect events
   'status:applied': {
@@ -928,6 +1065,13 @@ export type GameEventMap = {
     type: StatusEffectType;
     stacks: number;
   };
+  'status:requestApply': {
+    targetId: string;
+    type: StatusEffectType;
+    sourceAttack: number;
+    sourcePotency: number;
+  };
+  'statusEffect:immune': { targetId: string; type: StatusEffectType };
   'status:ticked': {
     targetId: string;
     type: StatusEffectType;
@@ -936,6 +1080,7 @@ export type GameEventMap = {
   'status:expired': { targetId: string; type: StatusEffectType };
 
   // Item events
+  'inventory:itemAdded': { item: ItemInstance; slotIndex: number };
   'item:dropped': { item: ItemInstance; x: number; y: number };
   'item:pickedUp': { item: ItemInstance };
   'item:equipped': { item: ItemInstance; slot: EquipmentSlot };
@@ -947,6 +1092,11 @@ export type GameEventMap = {
 
   // Loot events
   'loot:spawned': { item: ItemInstance; x: number; y: number };
+
+  // Gold drop events
+  'gold:dropped':   { amount: number; x: number; y: number };
+  'gold:spawned':   { id: string; amount: number; x: number; y: number };
+  'gold:collected': { amount: number };
 
   // Economy events
   'economy:goldChanged': { amount: number; total: number };
@@ -967,12 +1117,25 @@ export type GameEventMap = {
 
   // Projectile events
   'projectile:spawned': { projectile: ProjectileInstance };
-  'projectile:hit': { projectileId: string; targetId: string };
+  'projectile:hit': { projectileId: string; targetId: string; x: number; y: number };
   'projectile:expired': { projectileId: string };
+  'projectile:expiredWithPosition': { projectileId: string; x: number; y: number };
 
   // UI events
   'ui:inventoryToggle': undefined;
   'ui:merchantToggle': undefined;
+  'ui:stashToggle': undefined;
+  'ui:codexToggle': undefined;
+  'ui:inventoryToStash': { item: ItemInstance; fromInventoryIndex: number };
+  'ui:stashToInventory': { item: ItemInstance; tabIndex: number; slotIndex: number };
+  'stash:itemAdded': undefined;
+  'stash:tabChanged': undefined;
+  'stash:tabBought': undefined;
+  'stash:changed': undefined;
+  'ui:itemDragStart': { item: ItemInstance; sourceIndex: number; dragSource: 'inventory' | 'staging' | 'stash'; stashTab?: number; stashSlot?: number };
+  'ui:itemDragEnd': { sold: boolean };
+  'ui:stagingQuickMove':   { item: ItemInstance; fromInventoryIndex: number };
+  'ui:inventoryQuickMove': { item: ItemInstance; fromStagingIndex: number };
   'ui:skillSlotClicked': { slot: number };
   'ui:damageNumber': {
     x: number;
@@ -1092,6 +1255,50 @@ export type GameEventMap = {
     runId: string;
     outcome: 'completed' | 'failed' | 'abandoned';
   };
+
+  // Resonance events
+  'resonance:chargeGained': { type: ResonanceType; current: number };
+  'resonance:chargeLost': { type: ResonanceType; current: number };
+  'resonance:release': { type: 'ashburst' | 'overload'; x: number; y: number };
+  'resonance:duality': { active: boolean };
+  'resonance:requestCharge': { type: ResonanceType; amount: number };
+  'resonance:clearAll': undefined;
+
+  // Skill upgrade events
+  'skill:upgraded': { skillId: string; path: 'A' | 'B' | 'C'; tier: 1 | 2 };
+  'skill:respecced': { skillId: string; spRefunded: number };
+
+  // Cross-system CDR events (passives emit, skills.ts listens)
+  'skill:reduceCooldowns': { amount: number; excludeSkillId?: string };
+  'skill:reduceSingleCooldown': { skillId: string; amount: number };
+
+  // Player state events
+  'playerState:flowEntered': undefined;
+  'playerState:flowBroken': undefined;
+  'playerState:wrathEntered': undefined;
+  'playerState:wrathExited': undefined;
+  'playerState:primed': { multiplier: number };
+  'playerState:primedConsumed': undefined;
+
+  // Stealth events
+  'player:stealthStart': undefined;
+  'player:stealthEnd': undefined;
+
+  // Shadow trail / echo events
+  'shadow:trailCreated': { startX: number; startY: number; endX: number; endY: number; width: number; duration: number };
+  'shadow:echoStarted': { startX: number; startY: number; endX: number; endY: number; duration: number };
+
+  // Enemy state events
+  'enemyState:applied': { monsterId: string; type: EnemyStateType; stacks: number; duration: number };
+  'enemyState:expired': { monsterId: string; type: EnemyStateType };
+
+  // Environmental zone events
+  'environment:zoneCreated': {
+    id: string; type: string;
+    x: number; y: number;
+    radius: number; duration: number;
+  };
+  'environment:zoneExpired': { id: string };
 };
 
 export type GameEvent = keyof GameEventMap;
@@ -1121,6 +1328,15 @@ export interface LootDrop {
   createdAt: number;
   isPickedUp: boolean;
   magnetTimer: number; // timer for auto-pickup magnet
+}
+
+export interface GoldDrop {
+  id: string;
+  amount: number;
+  x: number;
+  y: number;
+  createdAt: number;
+  isPickedUp: boolean;
 }
 
 export interface DamageResult {

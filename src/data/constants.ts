@@ -16,6 +16,8 @@ export const BASE_PLAYER_ATTACK = 14;
 export const ATTACK_PER_LEVEL = 2;
 export const BASE_PLAYER_DEFENSE = 3;
 export const DEFENSE_PER_LEVEL = 0.8;
+export const BASE_PLAYER_MAGIC_RESIST = 0;
+export const MAGIC_RESIST_PER_LEVEL = 0.8;
 export const BASE_PLAYER_MAGIC_POWER = 5;
 export const MAGIC_POWER_PER_LEVEL = 1.5;
 export const BASE_CRIT_CHANCE = 0.05;
@@ -60,9 +62,10 @@ export const MAX_SKILL_LEVEL = 5;
 export const MAX_LEVEL = 100;
 
 // --- Skills ---
-export const ACTIVE_SKILL_SLOTS = 6;
-export const PASSIVE_SKILL_SLOTS = 3;
+export const ACTIVE_SKILL_SLOTS = 4;
+export const PASSIVE_SKILL_SLOTS = 2;
 export const COOLDOWN_FLOOR_PERCENT = 0.5; // min CD = 50% of base
+export const MAX_RESPECS_PER_SESSION = 3;
 
 // --- Items ---
 export const INVENTORY_SIZE = 24;
@@ -145,7 +148,6 @@ export const AGGRESSIVE_DAMAGE_MULT = 1.5;
 export const REGEN_RATE_DEFAULT = 0.03;        // 3% maxHP/sec
 export const ARMOR_DEFAULT = 10;
 export const SHIELD_PERCENT_DEFAULT = 0.3;     // 30% of max HP
-export const SHIELD_DAMAGE_REDUCTION = 0.5;    // 50% while shield up
 
 // --- Monster Rarity ---
 export const MONSTER_MAGIC_BASE_CHANCE = 0.12;
@@ -272,6 +274,72 @@ export const SLOW_DURATION = 4.0;
 export const FREEZE_DURATION = 1.5;
 export const FREEZE_REAPPLY_COOLDOWN = 5.0;
 
+// --- Resonance ---
+export const RESONANCE_MAX_CHARGES = 5;
+export const RESONANCE_DECAY_TIME = 5;       // seconds after last charge before decay starts
+export const RESONANCE_DECAY_RATE = 1;       // lose 1 charge per second during decay
+export const RESONANCE_DUALITY_THRESHOLD = 3; // 3+ of each type triggers Duality
+export const RESONANCE_DUALITY_DAMAGE_BONUS = 0.15; // +15% all damage
+
+// --- Ashburst/Overload ---
+export const ASHBURST_RADIUS = 120;          // pixels
+export const ASHBURST_DAMAGE_MULT = 2.0;     // ×2.0 player.attack
+export const OVERLOAD_RADIUS = 160;          // pixels
+export const OVERLOAD_DAMAGE_MULT = 2.5;     // ×2.5 player.magicPower
+
+// --- Player States ---
+export const FLOW_HIT_THRESHOLD = 4;         // consecutive hits to enter Flow
+export const FLOW_HIT_WINDOW = 2.0;          // seconds between hits before counter resets
+export const FLOW_SPEED_BONUS = 0.08;        // +8% move/attack speed
+export const WRATH_HP_THRESHOLD = 0.35;      // <35% HP triggers Wrath
+export const WRATH_DAMAGE_BONUS = 0.20;      // +20% all damage
+export const PRIMED_DAMAGE_BONUS = 0.25;     // +25% next hit damage
+
+// --- Enemy States ---
+export const SUNDERED_DEFENSE_REDUCTION = 0.20; // -20% defense
+export const SUNDERED_DURATION = 4.0;
+export const CHARGED_MR_REDUCTION = 0.20;       // -20% magicResist per stack
+export const CHARGED_MAX_STACKS = 3;
+export const CHARGED_DURATION = 4.0;
+export const STAGGERED_DURATION = 0.4;          // 0.4s guaranteed crit window
+export const PRIMED_DURATION = 8.0;               // seconds before Primed auto-expires
+
+// --- Passive Tuning ---
+export const RHYTHM_HIT_THRESHOLD = 3;
+export const RHYTHM_MAX_BONUS = 0.25;
+export const RHYTHM_BONUS_PER_HIT = 0.05;
+export const RHYTHM_TIMEOUT = 2.0;
+export const ARCANE_RECURSION_CDR = 0.5;
+export const BLOOD_PRICE_HP_CHUNK = 0.05;
+export const BLOOD_PRICE_WRATH_STACK = 0.05;
+export const BLOOD_PRICE_WRATH_CAP = 0.35;
+export const BLOOD_PRICE_PANIC_THRESHOLD = 0.15;
+export const SHADOW_REFLEXES_HITS = 2;
+export const SHADOW_REFLEXES_DAMAGE_BONUS = 0.20;
+export const SHADOW_REFLEXES_DURATION = 3.0;
+export const SHADOW_REFLEXES_PANIC_WINDOW = 0.5;
+export const SHADOW_REFLEXES_PANIC_CDR = 2.0;
+export const FLOW_STATE_ENERGY_RESTORE = 8;
+export const FLOW_STATE_RELEASE_DAMAGE_BONUS = 0.30;
+export const FLOW_STATE_RELEASE_RADIUS_BONUS = 0.20;
+
+// --- Shadow Step Upgrade Constants ---
+export const SHADOW_TRAIL_TICK_INTERVAL = 0.5;  // seconds between trail damage ticks
+export const ASSASSIN_BEHIND_OFFSET = 35;        // px behind target center
+
+// --- Environmental Zones ---
+export const AFTERSHOCK_ZONE_RADIUS = 80;
+export const AFTERSHOCK_ZONE_DURATION = 4.0;
+export const AFTERSHOCK_ZONE_TICK_INTERVAL = 1.0;
+export const AFTERSHOCK_ZONE_SLOW_PERCENT = 0.20;
+export const AFTERSHOCK_ZONE_DAMAGE_PERCENT = 0.10; // 10% of player attack per tick
+
+// --- Arcane Bolt Upgrade Constants ---
+export const SEEKER_HOMING_TURN_RATE = 8.0;     // rad/sec (vs base 3.0)
+export const SEEKER_HOMING_RANGE = 500;          // px detection range (vs base 300)
+export const CHAIN_REACTION_BASE_DETONATION_RADIUS = 40;  // px
+export const CHAIN_REACTION_RADIUS_PER_HIT = 20;          // px added per piercing hit
+
 // --- Zones ---
 export const ZONE_TRANSITION_DISTANCE = 60; // pixels from edge to trigger transition
 
@@ -342,10 +410,39 @@ export const ASCENSION_DAMAGE_BONUS = 0.05;
 export const ASCENSION_GOLD_BONUS = 0.05;
 export const ASCENSION_XP_BONUS = 0.05;
 
+// --- Stash ---
+export const STASH_TAB_SIZE  = 24;    // 4×6 grid, same as inventory
+export const STASH_MAX_TABS  = 8;
+export const STASH_FREE_TABS = 3;
+// Cost to buy tabs 4–8:
+export const STASH_TAB_COSTS = [2000, 5000, 10000, 20000, 35000];
+
 // --- UI ---
 export const DAMAGE_NUMBER_DURATION = 0.8;
 export const DAMAGE_NUMBER_RISE_SPEED = 60;
 export const DAMAGE_NUMBER_CRIT_SCALE = 1.5;
+
+// --- Resonance Mote Visuals ---
+export const MOTE_ORBIT_RADIUS = 18;
+export const MOTE_BASE_SPEED = 2.5;
+export const MOTE_MAX_SPEED_MULT = 1.5;
+export const MOTE_SIZE = 3;
+export const MOTE_GLOW_SIZE = 5;
+
+// --- Skill Camera Shake ---
+export const SHAKE_HEAVY_SLASH_DURATION = 200;
+export const SHAKE_HEAVY_SLASH_INTENSITY = 0.002;
+export const SHAKE_HEAVY_SLASH_CRIT_DURATION = 300;
+export const SHAKE_HEAVY_SLASH_CRIT_INTENSITY = 0.005;
+export const SHAKE_PLAYER_HIT_DURATION = 250;
+export const SHAKE_PLAYER_HIT_INTENSITY = 0.004;
+
+// --- Death VFX ---
+export const DEATH_BURST_PARTICLE_COUNT = 16;
+export const DEATH_BURST_SPEED = 120;
+export const DEATH_BURST_DURATION = 300;
+export const DEATH_BURST_SHAKE_DURATION = 100;
+export const DEATH_BURST_SHAKE_INTENSITY = 0.002;
 
 // --- Colors ---
 export const COLORS = {

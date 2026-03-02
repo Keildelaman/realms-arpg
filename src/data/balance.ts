@@ -13,6 +13,8 @@ import {
   DEFENSE_PER_LEVEL,
   BASE_PLAYER_MAGIC_POWER,
   MAGIC_POWER_PER_LEVEL,
+  BASE_PLAYER_MAGIC_RESIST,
+  MAGIC_RESIST_PER_LEVEL,
   DEFENSE_CONSTANT,
   MIN_DAMAGE,
   SP_EVERY_N_LEVELS,
@@ -53,6 +55,10 @@ export function baseMagicPowerAtLevel(level: number): number {
   return Math.floor(BASE_PLAYER_MAGIC_POWER + (level - 1) * MAGIC_POWER_PER_LEVEL);
 }
 
+export function baseMagicResistAtLevel(level: number): number {
+  return Math.floor(BASE_PLAYER_MAGIC_RESIST + (level - 1) * MAGIC_RESIST_PER_LEVEL);
+}
+
 // --- Combat Math ---
 
 export function calculateDamageReduction(defense: number): number {
@@ -64,13 +70,9 @@ export function calculateDamage(
   defense: number,
   critChance: number,
   critDamage: number,
-  armorReduction: number = 0,
 ): { damage: number; isCrit: boolean } {
   const isCrit = Math.random() < critChance;
-  let baseDmg = isCrit ? Math.floor(attack * critDamage) : attack;
-
-  // Apply armor flat reduction
-  baseDmg = Math.max(0, baseDmg - armorReduction);
+  const baseDmg = isCrit ? Math.floor(attack * critDamage) : attack;
 
   // Apply defense % reduction
   const reduction = calculateDamageReduction(defense);

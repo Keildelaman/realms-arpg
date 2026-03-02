@@ -80,8 +80,38 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 14,
   },
 
+  magic_pen: {
+    id: 'magic_pen',
+    name: '+X% Magic Penetration',
+    description: 'Ignores a portion of enemy magic resistance.',
+    stat: 'magicPen',
+    category: 'offensive',
+    isPrefix: true,
+    t1Min: 0.03, t1Max: 0.07, scaleType: 'percentage', weight: 14,
+  },
+
+  life_steal: {
+    id: 'life_steal',
+    name: '+X% Life Steal',
+    description: 'Heals for a percentage of physical damage dealt.',
+    stat: 'lifeSteal',
+    category: 'offensive',
+    isPrefix: false,
+    t1Min: 0.005, t1Max: 0.015, scaleType: 'percentage', weight: 10,
+  },
+
+  spell_leech: {
+    id: 'spell_leech',
+    name: '+X% Spell Leech',
+    description: 'Heals for a percentage of magic damage dealt.',
+    stat: 'spellLeech',
+    category: 'offensive',
+    isPrefix: false,
+    t1Min: 0.005, t1Max: 0.015, scaleType: 'percentage', weight: 10,
+  },
+
   // ==========================================================================
-  // DEFENSIVE (5)
+  // DEFENSIVE (6)
   // ==========================================================================
 
   flat_max_hp: {
@@ -132,6 +162,16 @@ export const AFFIXES: Record<string, AffixDefinition> = {
     category: 'defensive',
     isPrefix: false,
     t1Min: 0.01, t1Max: 0.03, scaleType: 'percentage', weight: 12,
+  },
+
+  flat_magic_resist: {
+    id: 'flat_magic_resist',
+    name: '+X Magic Resist',
+    description: 'Increases resistance to magic damage.',
+    stat: 'magicResist',
+    category: 'defensive',
+    isPrefix: false,
+    t1Min: 2, t1Max: 5, scaleType: 'flat', weight: 25,
   },
 
   // ==========================================================================
