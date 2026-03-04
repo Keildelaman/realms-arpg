@@ -184,8 +184,14 @@ finalDamage = max(1, damage × (1 - damageReduction))
 
 | Doc | Purpose |
 |-----|---------|
+| `docs/ART_BIBLE_V1.md` | **Visual style bible — read before ANY UI/UX/art/design work** |
+| `docs/ART_OVERHAUL_ROADMAP.md` | Phase-by-phase art overhaul task list |
 | `docs/TECH_STACK.md` | Why Phaser + TypeScript + Vite |
 | `docs/CLICKER_REFERENCE.md` | Complete inventory of clicker systems to port/adapt |
 | `docs/ARCHITECTURE.md` | Scene structure, entity model, system integration |
 | `docs/MAP_SYSTEM.md` | Hub ("Haven") + Expedition procedural map system design |
 | `../clicker_02_26/docs/` | Original 25+ game design spec documents |
+
+### Art Bible Rule
+
+**Any task involving visuals — sprites, UI panels, VFX, colors, layout, icons, atmosphere — MUST consult `docs/ART_BIBLE_V1.md` before implementation.** The art bible defines the "Arcane Low-Fi Noir" style, color palette tokens, SVG constraints, shape language, and pass/fail quality gates. Do not hardcode colors or create visual assets from memory — always verify against the bible.

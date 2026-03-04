@@ -10,7 +10,8 @@
 > **Phase 5 Status:** COMPLETE (2026-03-02) — SP economy (level-up emit, boss first-kill +2 SP), unlock condition checking, passive unlockConditions, skillUsageCounts persistence
 > **Phase 7 Status:** COMPLETE (2026-03-02) — 4-Layer Feedback + VFX + Resonance Visuals (impact/knockback pipeline for skills, slash/spark/shockwave VFX, death burst, resonance motes, player state visuals, enemy state overlays, camera effects)
 > **Phase 8 Status:** COMPLETE (2026-03-02) — Environmental States (Shadow Trail rendering, Echo Step ghost visual, Aftershock Zone infrastructure + VFX)
-> **Remaining:** Phase 6 described below
+> **Phase 6 Status:** COMPLETE (2026-03-02) — Codex UI (skill unlock/equip/upgrade panel, path selection, passive management, first-use celebration, SP indicator)
+> **All phases complete.**
 
 ---
 
