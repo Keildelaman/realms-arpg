@@ -47,6 +47,9 @@ export class SkillCodex extends Phaser.GameObjects.Container {
   private selectedSkillId: string | null = null;
   private selectedPath: 'A' | 'B' | 'C' | null = null;
 
+  // SP text reference for flash animation
+  private spText: Phaser.GameObjects.Text | null = null;
+
   constructor(scene: Phaser.Scene) {
     super(scene, 0, 0);
     scene.add.existing(this);
@@ -116,11 +119,11 @@ export class SkillCodex extends Phaser.GameObjects.Container {
     this.addText(innerX, py + 14, 'SKILL CODEX', 14, UI_THEME.accent, true);
 
     const player = getPlayer();
-    const spText = `SP: ${player.skillPoints}`;
-    this.addText(
+    const spLabel = `SP: ${player.skillPoints}`;
+    this.spText = this.addText(
       px + PANEL_WIDTH - 70,
       py + 14,
-      spText,
+      spLabel,
       13,
       player.skillPoints > 0 ? UI_THEME.warning : UI_THEME.textDim,
       true,
@@ -142,8 +145,7 @@ export class SkillCodex extends Phaser.GameObjects.Container {
     this.addText(innerX, activeY, 'ACTIVE SKILLS', 11, UI_THEME.textDim);
 
     const activeStartY = activeY + 18;
-    // Filter out basic_attack
-    const activeSkills = ACTIVE_SKILLS.filter((s) => s.id !== 'basic_attack');
+    const activeSkills = ACTIVE_SKILLS;
     const activeRowX =
       innerX + (innerW - (activeSkills.length * CARD_W + (activeSkills.length - 1) * CARD_GAP)) / 2;
 
@@ -366,6 +368,38 @@ export class SkillCodex extends Phaser.GameObjects.Container {
       canAfford
         ? () => {
             skills.unlockSkill(def.id);
+
+            // SP flash animation — briefly flash red
+            if (this.spText) {
+              this.spText.setColor('#ef4444');
+              this.scene.time.delayedCall(300, () => {
+                if (this.spText) this.spText.setColor(UI_THEME.warning);
+              });
+            }
+
+            // Particle burst at unlock button
+            const burstX = x + 70;
+            const burstY = cy + 14;
+            const burstColor = Phaser.Display.Color.HexStringToColor(def.color).color;
+            for (let i = 0; i < 10; i++) {
+              const angle = (Math.PI * 2 * i) / 10;
+              const speed = 40 + Math.random() * 30;
+              const p = this.scene.add.circle(burstX, burstY, 2.5, burstColor, 1);
+              p.setDepth(201);
+              p.setScrollFactor(0);
+              this.scene.tweens.add({
+                targets: p,
+                x: burstX + Math.cos(angle) * speed,
+                y: burstY + Math.sin(angle) * speed,
+                alpha: 0,
+                scaleX: 0.2,
+                scaleY: 0.2,
+                duration: 400,
+                ease: 'Power2',
+                onComplete: () => p.destroy(),
+              });
+            }
+
             this.refresh();
           }
         : undefined,
@@ -398,11 +432,11 @@ export class SkillCodex extends Phaser.GameObjects.Container {
     this.addText(x, cy, def.description, 11, UI_THEME.textDim, false, false, w);
     cy += 26;
 
-    // Equip row — slots 1, 2, 3 (skip slot 0 which is basic_attack)
+    // Equip row — slots 0-3
     this.addText(x, cy, 'Equip:', 10, UI_THEME.textDim);
     const equippedSlot = player.activeSkills.indexOf(def.id);
-    for (let slot = 1; slot <= 3; slot++) {
-      const btnX = x + 50 + (slot - 1) * 52;
+    for (let slot = 0; slot <= 3; slot++) {
+      const btnX = x + 50 + slot * 48;
       const isCurrentSlot = equippedSlot === slot;
       const label = ACTIVE_SLOT_LABELS[slot];
       this.addButton(
@@ -799,12 +833,7 @@ export class SkillCodex extends Phaser.GameObjects.Container {
   // =========================================================================
 
   private getRespecsRemaining(): number {
-    // skills.ts tracks respecsUsed internally; we infer remaining from
-    // trying respec on a dummy (not ideal). For now, we attempt to read
-    // the constant. The exact remaining count isn't directly exposed,
-    // so we just use MAX_RESPECS_PER_SESSION as the cap — the respec
-    // function itself returns false when exceeded.
-    return MAX_RESPECS_PER_SESSION;
+    return MAX_RESPECS_PER_SESSION - skills.getRespecsUsed();
   }
 
   private addText(

@@ -22,10 +22,18 @@ interface RarityVFXConfig {
   shockwave: boolean;
 }
 
+const ARC_DURATION = 200; // ms — item arc/fall animation
+
 interface ItemDropVisuals {
   container: Phaser.GameObjects.Container;
   rarity: Rarity;
+  itemName: string;           // stored for legendary notification at landing
   particleTimer: number;
+  landed: boolean;            // false during arc; true once onItemLanded() fires
+  gem: Phaser.GameObjects.Graphics;
+  outerGlow: Phaser.GameObjects.Arc;
+  innerGlow: Phaser.GameObjects.Arc | null;
+  beam: Phaser.GameObjects.Rectangle | null;
 }
 
 interface GoldDropVisuals {
@@ -114,7 +122,11 @@ export class LootVFX {
     }
     for (const drop of activeDrops) {
       if (drop.isPickedUp) continue;
-      this.itemContainers.get(drop.item.id)?.container.setPosition(drop.x, drop.y);
+      const vis = this.itemContainers.get(drop.item.id);
+      if (vis && vis.landed) {
+        // Tween owns x/y during arc; only track position after landing.
+        vis.container.setPosition(drop.x, drop.y);
+      }
     }
     const toDeleteItems: string[] = [];
     for (const [id] of this.itemContainers) {
@@ -149,6 +161,7 @@ export class LootVFX {
 
   update(dt: number): void {
     for (const [, vis] of this.itemContainers) {
+      if (!vis.landed) continue;
       const cfg = RARITY_VFX[vis.rarity];
       if (cfg.risePeriod <= 0) continue;
       vis.particleTimer += dt;
@@ -169,57 +182,43 @@ export class LootVFX {
   private createItemVisuals(drop: LootDrop): void {
     const { item } = drop;
     const cfg = RARITY_VFX[item.rarity];
-    const container = this.scene.add.container(drop.x, drop.y).setDepth(5);
 
-    // 1. Outer glow
-    const outerGlow = this.scene.add.circle(0, 0, cfg.outerGlowRadius, cfg.color, cfg.outerGlowAlpha);
+    // Arc origin: slightly above and horizontally offset from the resting position.
+    const arcOffsetX = (Math.random() - 0.5) * 40;       // ±20px horizontal
+    const arcStartY  = drop.y - (35 + Math.random() * 20); // 35–55px above
+
+    const container = this.scene.add
+      .container(drop.x + arcOffsetX, arcStartY)
+      .setDepth(5)
+      .setScale(0.4); // grows to 1.0 during arc
+
+    // 1. Outer glow — alpha=0; fades in at landing
+    const outerGlow = this.scene.add.circle(0, 0, cfg.outerGlowRadius, cfg.color, 0);
     container.add(outerGlow);
-    this.scene.tweens.add({
-      targets: outerGlow,
-      alpha: cfg.outerGlowAlpha * 0.4,
-      duration: 1200,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    });
 
-    // 2. Inner glow (if enabled)
+    // 2. Inner glow — alpha=0
+    let innerGlow: Phaser.GameObjects.Arc | null = null;
     if (cfg.innerGlowRadius > 0) {
-      const innerGlow = this.scene.add.circle(0, 0, cfg.innerGlowRadius, cfg.color, cfg.innerGlowAlpha);
+      innerGlow = this.scene.add.circle(0, 0, cfg.innerGlowRadius, cfg.color, 0);
       container.add(innerGlow);
     }
 
-    // 3. Beam (if enabled)
+    // 3. Beam — alpha=0
+    let beam: Phaser.GameObjects.Rectangle | null = null;
     if (cfg.beamHeight > 0) {
-      const beam = this.scene.add.rectangle(
+      beam = this.scene.add.rectangle(
         0, -(cfg.beamHeight / 2 + 8),
         cfg.beamWidth, cfg.beamHeight,
-        cfg.color, cfg.beamAlpha,
+        cfg.color, 0,
       );
       container.add(beam);
-      this.scene.tweens.add({
-        targets: beam,
-        alpha: cfg.beamAlpha * 0.5,
-        duration: 900,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.easeInOut',
-      });
     }
 
-    // 4. Sprite — bob tween on local y (container.setPosition never touches children)
-    const sprite = this.scene.add.sprite(0, 0, 'loot_bag');
-    container.add(sprite);
-    this.scene.tweens.add({
-      targets: sprite,
-      y: -4,
-      duration: 800,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    });
+    // 4. Gem shape (replaces loot_bag sprite)
+    const gem = this.drawGemShape(item.rarity);
+    container.add(gem);
 
-    // 5. Label (if enabled)
+    // 5. Label (if configured; visible from spawn is fine — small during arc)
     if (cfg.showLabel) {
       const colorStr = `#${cfg.color.toString(16).padStart(6, '0')}`;
       const label = this.scene.add.text(0, -20, item.name, {
@@ -232,66 +231,236 @@ export class LootVFX {
       container.add(label);
     }
 
-    // Side effects
-    this.spawnImpactBurst(drop.x, drop.y, item.rarity);
-    if (cfg.shakeMs > 0) {
-      this.scene.cameras.main.shake(cfg.shakeMs, cfg.shakeIntensity);
-    }
-    if (cfg.cameraFlash) {
-      // amber #fbbf24 = rgb 251, 191, 36
-      this.scene.cameras.main.flash(400, 251, 191, 36, false);
-    }
-    if (cfg.showNotification) {
-      this.spawnLegendaryNotification(item.name);
-    }
+    // Register as not-yet-landed
+    const vis: ItemDropVisuals = {
+      container, rarity: item.rarity, itemName: item.name,
+      particleTimer: 0, landed: false,
+      gem, outerGlow, innerGlow, beam,
+    };
+    this.itemContainers.set(item.id, vis);
 
-    const particleTimer = cfg.risePeriod > 0 ? Math.random() * cfg.risePeriod : 0;
-    this.itemContainers.set(item.id, { container, rarity: item.rarity, particleTimer });
+    // Arc tween: Power2.easeIn simulates gravity (slow start → fast land)
+    this.scene.tweens.add({
+      targets: container,
+      x: drop.x,
+      y: drop.y,
+      scaleX: 1.0,
+      scaleY: 1.0,
+      duration: ARC_DURATION,
+      ease: 'Power2.easeIn',
+      onComplete: () => this.onItemLanded(vis, cfg, drop.x, drop.y),
+    });
   }
 
-  private createGoldVisuals(drop: GoldDrop): void {
-    const { amount } = drop;
-    const scale      = amount <= 15 ? 1.0  : amount <= 50 ? 1.35 : amount <= 150 ? 1.75 : 2.3;
-    const glowRadius = amount <= 15 ? 0    : amount <= 50 ? 12   : amount <= 150 ? 18   : 28;
+  private onItemLanded(
+    vis: ItemDropVisuals,
+    cfg: RarityVFXConfig,
+    x: number,
+    y: number,
+  ): void {
+    const { gem, outerGlow, innerGlow, beam } = vis;
 
-    const container = this.scene.add.container(drop.x, drop.y).setDepth(5);
-
-    // 1. Glow (if enabled)
-    if (glowRadius > 0) {
-      const glow = this.scene.add.circle(0, 0, glowRadius, 0xfde68a, 0.20);
-      container.add(glow);
-      this.scene.tweens.add({
-        targets: glow,
-        alpha: 0.08,
-        duration: 1200,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.easeInOut',
-      });
-    }
-
-    // 2. Coin sprite with bob tween
-    const sprite = this.scene.add.sprite(0, 0, 'gold_coin').setScale(scale);
-    container.add(sprite);
+    // 1. Gem scale punch: 1.0 → 1.35 → 1.0, 80ms yoyo
     this.scene.tweens.add({
-      targets: sprite,
-      y: -3,
-      duration: 600,
+      targets: gem,
+      scaleX: 1.35, scaleY: 1.35,
+      duration: 80,
+      ease: 'Power2.easeOut',
+      yoyo: true,
+    });
+
+    // 2. Bob tween on gem (perpetual, local y — container.y not affected)
+    this.scene.tweens.add({
+      targets: gem,
+      y: -4,
+      duration: 800,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
     });
 
-    // 3. Amount label
+    // 3. Outer glow fade-in → then start pulse loop
+    this.scene.tweens.add({
+      targets: outerGlow,
+      alpha: cfg.outerGlowAlpha,
+      duration: 200,
+      ease: 'Sine.easeOut',
+      onComplete: () => {
+        this.scene.tweens.add({
+          targets: outerGlow,
+          alpha: cfg.outerGlowAlpha * 0.4,
+          duration: 1200,
+          yoyo: true, repeat: -1,
+          ease: 'Sine.easeInOut',
+        });
+      },
+    });
+
+    // 4. Inner glow fade-in
+    if (innerGlow) {
+      this.scene.tweens.add({
+        targets: innerGlow,
+        alpha: cfg.innerGlowAlpha,
+        duration: 200,
+        ease: 'Sine.easeOut',
+      });
+    }
+
+    // 5. Beam fade-in → then start shimmer loop
+    if (beam) {
+      this.scene.tweens.add({
+        targets: beam,
+        alpha: cfg.beamAlpha,
+        duration: 300,
+        ease: 'Sine.easeOut',
+        onComplete: () => {
+          this.scene.tweens.add({
+            targets: beam,
+            alpha: cfg.beamAlpha * 0.5,
+            duration: 900,
+            yoyo: true, repeat: -1,
+            ease: 'Sine.easeInOut',
+          });
+        },
+      });
+    }
+
+    // 6. Impact burst (was previously fired at spawn)
+    this.spawnImpactBurst(x, y, vis.rarity);
+
+    // 7. Camera effects
+    if (cfg.shakeMs > 0) this.scene.cameras.main.shake(cfg.shakeMs, cfg.shakeIntensity);
+    if (cfg.cameraFlash) this.scene.cameras.main.flash(400, 251, 191, 36, false);
+    if (cfg.showNotification) this.spawnLegendaryNotification(vis.itemName);
+
+    // 8. Stagger rising-particle timer
+    if (cfg.risePeriod > 0) vis.particleTimer = Math.random() * cfg.risePeriod;
+
+    // 9. Enable position tracking in syncDrops
+    vis.landed = true;
+  }
+
+  private drawGemShape(rarity: Rarity): Phaser.GameObjects.Graphics {
+    const color = RARITY_HEX[rarity];
+    const gfx = this.scene.add.graphics();
+
+    gfx.fillStyle(color, 1);
+
+    switch (rarity) {
+      case 'common':
+        gfx.fillRoundedRect(-5, -5, 10, 10, 2);
+        break;
+
+      case 'uncommon':
+        gfx.beginPath();
+        gfx.moveTo(0, -6);
+        gfx.lineTo(5, 0);
+        gfx.lineTo(0, 6);
+        gfx.lineTo(-5, 0);
+        gfx.closePath();
+        gfx.fillPath();
+        break;
+
+      case 'rare': {
+        const r = 9;
+        gfx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const a = (Math.PI / 3) * i - Math.PI / 6; // flat-top orientation
+          const px = Math.cos(a) * r;
+          const py = Math.sin(a) * r;
+          if (i === 0) gfx.moveTo(px, py); else gfx.lineTo(px, py);
+        }
+        gfx.closePath();
+        gfx.fillPath();
+        break;
+      }
+
+      case 'epic': {
+        const outerR = 11, innerR = 5, pts = 6;
+        gfx.beginPath();
+        for (let i = 0; i < pts * 2; i++) {
+          const r = i % 2 === 0 ? outerR : innerR;
+          const a = (Math.PI / pts) * i - Math.PI / 2;
+          const px = Math.cos(a) * r;
+          const py = Math.sin(a) * r;
+          if (i === 0) gfx.moveTo(px, py); else gfx.lineTo(px, py);
+        }
+        gfx.closePath();
+        gfx.fillPath();
+        break;
+      }
+
+      case 'legendary': {
+        const outerR = 13, innerR = 6, pts = 8;
+        gfx.beginPath();
+        for (let i = 0; i < pts * 2; i++) {
+          const r = i % 2 === 0 ? outerR : innerR;
+          const a = (Math.PI / pts) * i - Math.PI / 2;
+          const px = Math.cos(a) * r;
+          const py = Math.sin(a) * r;
+          if (i === 0) gfx.moveTo(px, py); else gfx.lineTo(px, py);
+        }
+        gfx.closePath();
+        gfx.fillPath();
+        // Inner circle accent
+        gfx.fillStyle(0xffffff, 0.25);
+        gfx.fillCircle(0, 0, 5);
+        break;
+      }
+    }
+
+    // Specular highlight — small white dot near top-left of all shapes
+    gfx.fillStyle(0xffffff, 0.45);
+    gfx.fillCircle(-3, -3, 2);
+
+    return gfx;
+  }
+
+  private createGoldVisuals(drop: GoldDrop): void {
+    const { amount } = drop;
+    const scale      = amount <= 15 ? 1.0 : amount <= 50 ? 1.35 : amount <= 150 ? 1.75 : 2.3;
+    const glowRadius = amount <= 15 ? 0   : amount <= 50 ? 12   : amount <= 150 ? 18   : 28;
+
+    const container = this.scene.add.container(drop.x, drop.y).setDepth(5).setScale(0);
+
+    if (glowRadius > 0) {
+      const glow = this.scene.add.circle(0, 0, glowRadius, 0xfde68a, 0.20);
+      container.add(glow);
+      this.scene.time.delayedCall(180, () => {
+        this.scene.tweens.add({
+          targets: glow, alpha: 0.08, duration: 1200,
+          yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+        });
+      });
+    }
+
+    const sprite = this.scene.add.sprite(0, 0, 'gold_coin').setScale(scale);
+    container.add(sprite);
+    this.scene.time.delayedCall(180, () => {
+      this.scene.tweens.add({
+        targets: sprite, y: -3, duration: 600,
+        yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      });
+    });
+
     const labelStr = amount >= 1000 ? `${(amount / 1000).toFixed(1)}k` : `${amount}`;
     const label = this.scene.add.text(0, -10 * scale, labelStr, {
-      fontFamily: 'monospace',
-      fontSize: '8px',
-      color: '#fde68a',
-      stroke: '#000000',
-      strokeThickness: 2,
+      fontFamily: 'monospace', fontSize: '8px',
+      color: '#fde68a', stroke: '#000000', strokeThickness: 2,
     }).setOrigin(0.5, 1);
     container.add(label);
+
+    // Scale pop: 0 → 1.3 → 1.0 over 180ms
+    this.scene.tweens.add({
+      targets: container, scaleX: 1.3, scaleY: 1.3,
+      duration: 100, ease: 'Power2.easeOut',
+      onComplete: () => {
+        this.scene.tweens.add({
+          targets: container, scaleX: 1.0, scaleY: 1.0,
+          duration: 80, ease: 'Power2.easeIn',
+        });
+      },
+    });
 
     this.goldContainers.set(drop.id, { container, amount });
   }

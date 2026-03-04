@@ -296,7 +296,7 @@ export class SkillBar extends Phaser.GameObjects.Container {
   private hasAvailableSkillAction(player: import('@/core/types').PlayerState): boolean {
     // Check if any skill can be unlocked or upgraded with current SP
     for (const def of Object.values(SKILLS)) {
-      if (def.id === 'basic_attack') continue;
+      if (def.isBasicAttack) continue;
       if (player.unlockedSkills.includes(def.id)) {
         // Can level up?
         const level = player.skillLevels[def.id] ?? 0;
@@ -321,7 +321,7 @@ export class SkillBar extends Phaser.GameObjects.Container {
     const plateW = slotW * 2 + gap + 16;
     const plateH = slotH + 12;
     const plateX = (this.scene.scale.width || GAME_WIDTH) / 2 - plateW / 2;
-    const plateY = this.getSlotY() + SKILL_ICON_SIZE + 14;
+    const plateY = this.getSlotY() - plateH - 4;
 
     drawSectionCard(this.passivePlate, plateX, plateY, plateW, plateH, true, 6);
 

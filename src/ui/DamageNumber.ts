@@ -23,6 +23,9 @@ export class DamageNumberManager {
   private scene: Phaser.Scene;
   private numbers: DamageNumberDisplay[] = [];
 
+  /** Set before a skill fires to override the next damage number's color (consumed on use). */
+  nextColorOverride: string | null = null;
+
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
 
@@ -37,8 +40,12 @@ export class DamageNumberManager {
     isCrit: boolean;
     damageType: DamageType;
     isHeal?: boolean;
+    colorOverride?: string;
   }): void => {
-    this.spawn(data.x, data.y, data.amount, data.isCrit, data.damageType, data.isHeal);
+    // Consume nextColorOverride if set, otherwise use event's colorOverride
+    const override = this.nextColorOverride ?? data.colorOverride;
+    if (this.nextColorOverride) this.nextColorOverride = null;
+    this.spawn(data.x, data.y, data.amount, data.isCrit, data.damageType, data.isHeal, override);
   };
 
   /**
@@ -50,11 +57,14 @@ export class DamageNumberManager {
     amount: number,
     isCrit: boolean,
     damageType: DamageType,
-    isHeal?: boolean
+    isHeal?: boolean,
+    colorOverride?: string,
   ): void {
     // Determine color
     let color: string;
-    if (isHeal) {
+    if (colorOverride) {
+      color = colorOverride;
+    } else if (isHeal) {
       color = COLORS.heal;
     } else if (isCrit) {
       color = COLORS.crit;
