@@ -23,7 +23,6 @@ import {
   BASE_CRIT_DAMAGE,
   BASE_MOVE_SPEED,
   BASE_ATTACK_SPEED,
-  BASIC_ATTACK_COOLDOWN,
   MAX_ENERGY,
   BASE_XP_REQUIREMENT,
   INVENTORY_SIZE,
@@ -160,13 +159,13 @@ function createDefaultPlayer(): PlayerState {
     attackPhase: 'none',
     attackPhaseTimer: 0,
     attackAngle: 0,
+    attackPullback: 0,
+    attackLunge: 0,
+    attackPhaseDuration: 0,
 
-    isAttacking: false,
     isDashing: false,
     isStealth: false,
     isInvulnerable: false,
-    lastAttackTime: 0,
-    basicAttackCooldown: BASIC_ATTACK_COOLDOWN,
 
     ascensionLevel: 0,
 

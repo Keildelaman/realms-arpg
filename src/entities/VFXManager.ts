@@ -7,8 +7,6 @@ import { on, off } from '@/core/event-bus';
 import { getPlayer, getMonsterById } from '@/core/game-state';
 import type { DamageType } from '@/core/types';
 import {
-  BASIC_ATTACK_ARC,
-  BASIC_ATTACK_RANGE,
   ATTACK_ARC_FILL_ALPHA,
   ATTACK_ARC_THICKNESS,
   ATTACK_ARC_INNER_RATIO,
@@ -62,15 +60,15 @@ export class VFXManager {
 
   // --- Attack arc (filled wedge) ---
 
-  private onAttackSwing = (data: { angle: number; duration: number }): void => {
+  private onAttackSwing = (data: { angle: number; duration: number; arcWidth: number; range: number }): void => {
     const player = getPlayer();
     const gfx = this.scene.add.graphics();
     gfx.setDepth(11);
 
-    const halfArcRad = (BASIC_ATTACK_ARC / 2) * (Math.PI / 180);
+    const halfArcRad = (data.arcWidth / 2) * (Math.PI / 180);
     const startAngle = data.angle - halfArcRad;
     const endAngle = data.angle + halfArcRad;
-    const outerR = BASIC_ATTACK_RANGE;
+    const outerR = data.range;
     const innerR = outerR * ATTACK_ARC_INNER_RATIO;
 
     // Filled wedge
@@ -110,10 +108,13 @@ export class VFXManager {
     gfx.setDepth(11);
 
     const angle = player.facingAngle;
-    const halfArcRad = (BASIC_ATTACK_ARC / 2) * (Math.PI / 180);
+    // Use player's current attack arc info (defaults for melee whiff visual)
+    const arcDeg = 120;
+    const arcRange = 80;
+    const halfArcRad = (arcDeg / 2) * (Math.PI / 180);
     const startAngle = angle - halfArcRad;
     const endAngle = angle + halfArcRad;
-    const outerR = BASIC_ATTACK_RANGE;
+    const outerR = arcRange;
     const innerR = outerR * ATTACK_ARC_INNER_RATIO;
 
     const physColor = Phaser.Display.Color.HexStringToColor(COLORS.physical).color;
@@ -173,7 +174,7 @@ export class VFXManager {
       return;
     }
 
-    // Basic attack: existing behavior
+    // Basic attack (source === 'basic') or untagged: particles + shake
     const shakeDuration = data.isCrit ? SCREEN_SHAKE_CRIT_DURATION : SCREEN_SHAKE_HIT_DURATION;
     const shakeIntensity = data.isCrit ? SCREEN_SHAKE_CRIT_INTENSITY : SCREEN_SHAKE_HIT_INTENSITY;
     this.scene.cameras.main.shake(shakeDuration, shakeIntensity);

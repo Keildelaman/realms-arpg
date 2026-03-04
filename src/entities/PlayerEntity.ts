@@ -17,11 +17,6 @@ import {
   MOVE_TRAIL_FREQUENCY,
   MOVE_SQUASH_ON_STOP,
   MOVE_SQUASH_DURATION,
-  ATTACK_PULLBACK_DISTANCE,
-  ATTACK_LUNGE_DISTANCE,
-  ATTACK_WINDUP_DURATION,
-  ATTACK_SWING_DURATION,
-  ATTACK_FOLLOW_THROUGH_DURATION,
   HIT_STOP_BASE,
   HIT_STOP_CRIT_BONUS,
   HIT_STOP_DAMAGE_SCALE,
@@ -133,23 +128,26 @@ export class PlayerEntity {
 
       if (player.attackPhase === 'windup') {
         // Pull back away from attack direction, squash slightly
-        const progress = 1 - (player.attackPhaseTimer / ATTACK_WINDUP_DURATION);
-        const pullback = ATTACK_PULLBACK_DISTANCE * progress;
+        const phaseDur = player.attackPhaseDuration || 0.065;
+        const progress = 1 - (player.attackPhaseTimer / phaseDur);
+        const pullback = player.attackPullback * progress;
         offsetX = -cosA * pullback;
         offsetY = -sinA * pullback;
         scaleX = 1 - 0.05 * progress;
         scaleY = 1 + 0.05 * progress;
       } else if (player.attackPhase === 'swing') {
         // Lunge toward attack direction, stretch
-        const progress = 1 - (player.attackPhaseTimer / ATTACK_SWING_DURATION);
-        const lunge = ATTACK_LUNGE_DISTANCE * (1 - Math.pow(1 - progress, 2));
+        const phaseDur = player.attackPhaseDuration || 0.08;
+        const progress = 1 - (player.attackPhaseTimer / phaseDur);
+        const lunge = player.attackLunge * (1 - Math.pow(1 - progress, 2));
         offsetX = cosA * lunge;
         offsetY = sinA * lunge;
         scaleX = 1 + 0.1 * (1 - progress);
         scaleY = 1 - 0.1 * (1 - progress);
       } else if (player.attackPhase === 'followthrough') {
         // Rebound back to center with slight overshoot
-        const progress = 1 - (player.attackPhaseTimer / ATTACK_FOLLOW_THROUGH_DURATION);
+        const phaseDur = player.attackPhaseDuration || 0.12;
+        const progress = 1 - (player.attackPhaseTimer / phaseDur);
         const overshoot = Math.sin(progress * Math.PI) * 2;
         offsetX = -cosA * overshoot;
         offsetY = -sinA * overshoot;
@@ -449,6 +447,30 @@ export class PlayerEntity {
         duration: 80,
         yoyo: true,
         ease: 'Power1',
+      });
+    } else if (data.skillId === 'ranger_shot') {
+      // Small recoil on shot
+      const cos = Math.cos(player.facingAngle);
+      const sin = Math.sin(player.facingAngle);
+      this.scene.tweens.add({
+        targets: this.sprite,
+        x: this.sprite.x - cos * 4,
+        y: this.sprite.y - sin * 4,
+        duration: 70,
+        yoyo: true,
+        ease: 'Power1',
+      });
+    } else if (data.skillId === 'arcane_strike') {
+      // Short forward pulse
+      const cos = Math.cos(player.facingAngle);
+      const sin = Math.sin(player.facingAngle);
+      this.scene.tweens.add({
+        targets: this.sprite,
+        x: this.sprite.x + cos * 5,
+        y: this.sprite.y + sin * 5,
+        duration: 60,
+        yoyo: true,
+        ease: 'Power2',
       });
     }
   };

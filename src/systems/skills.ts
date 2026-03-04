@@ -105,12 +105,25 @@ export function getEffectiveCooldown(skillId: string): number {
   // Gather cooldown reduction from equipment/buffs
   // For now, the player state doesn't have a dedicated CDR stat,
   // so we return the base cooldown. CDR can be added via modifiers later.
-  const cdrMultiplier = 1.0; // placeholder for future CDR stat
+  let cdrMultiplier = 1.0; // placeholder for future CDR stat
+
+  // Upgrade-path cooldown multiplier (e.g. Quick Draw -15%)
+  if (typeof flags.cooldownMult === 'number') {
+    cdrMultiplier *= flags.cooldownMult as number;
+  }
 
   const reducedCooldown = baseCooldown * cdrMultiplier;
   const floor = baseCooldown * COOLDOWN_FLOOR_PERCENT;
 
-  return Math.max(floor, reducedCooldown);
+  let result = Math.max(floor, reducedCooldown);
+
+  // Basic attack skills scale cooldown with attack speed
+  if (def.isBasicAttack) {
+    const player = getPlayer();
+    result /= player.attackSpeed;
+  }
+
+  return result;
 }
 
 /**
@@ -397,6 +410,9 @@ export function activateSkill(skillId: string, angle: number): boolean {
 
   // Standard one-shot activation
 
+  // Prevent overlapping melee phases
+  if (def.meleePhases && getPlayer().attackPhase !== 'none') return false;
+
   // Check cooldown
   if (skillState.cooldownRemaining > 0) return false;
 
@@ -491,6 +507,13 @@ export function isChanneling(skillId: string): boolean {
  */
 export function isToggleActive(skillId: string): boolean {
   return activeToggles.has(skillId);
+}
+
+/**
+ * Returns the number of upgrade respecs used this session.
+ */
+export function getRespecsUsed(): number {
+  return respecsUsed;
 }
 
 // --- Toggle management ---
@@ -709,12 +732,6 @@ export function respecSkillUpgrade(skillId: string): boolean {
 
 // --- Event handlers ---
 
-function onPlayerAttack(data: { angle: number; skillId?: string }): void {
-  if (data.skillId) {
-    activateSkill(data.skillId, data.angle);
-  }
-}
-
 /**
  * Event-driven CDR: reduce all skill cooldowns by a given amount.
  * Enforces 50% CD floor per skill so passives can't reduce to 0.
@@ -768,7 +785,6 @@ export function init(): void {
   activeChannels.clear();
   respecsUsed = 0;
 
-  on('combat:playerAttack', onPlayerAttack);
   on('skill:reduceCooldowns', onReduceCooldowns);
   on('skill:reduceSingleCooldown', onReduceSingleCooldown);
 }

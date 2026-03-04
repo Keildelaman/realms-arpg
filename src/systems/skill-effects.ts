@@ -208,7 +208,7 @@ function applyEnemyStateLocal(
  * Handles crit calculation and damage reduction.
  * Returns the final damage dealt.
  */
-function applyDamageToMonster(
+export function applyDamageToMonster(
   monsterId: string,
   rawDamage: number,
   damageType: DamageType,
@@ -231,7 +231,10 @@ function applyDamageToMonster(
     baseDmg = Math.floor(baseDmg * player.critDamage);
   }
 
-  // Type-routed defense reduction (with enemy state debuffs)
+  // Type-routed defense reduction (with enemy state debuffs + mark)
+  // Mark defense reduction applies to all damage types (reduces effective defense/MR)
+  const markDefReduction = monster.mark ? monster.mark.defenseReduction : 0;
+
   let finalDamage: number;
   if (damageType === 'physical') {
     let sunderedMult: number;
@@ -241,7 +244,7 @@ function applyDamageToMonster(
       const hasSundered = monster.enemyStates?.some(s => s.type === 'sundered' && s.duration > 0) ?? false;
       sunderedMult = hasSundered ? (1 - SUNDERED_DEFENSE_REDUCTION) : 1;
     }
-    const effectiveDefense = Math.max(0, monster.defense * sunderedMult * (1 - player.armorPen));
+    const effectiveDefense = Math.max(0, monster.defense * sunderedMult * (1 - markDefReduction) * (1 - player.armorPen));
     const reduction = effectiveDefense / (effectiveDefense + DEFENSE_CONSTANT);
     finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
   } else {
@@ -249,7 +252,7 @@ function applyDamageToMonster(
       ?.filter(s => s.type === 'charged' && s.duration > 0)
       .reduce((sum, s) => sum + s.stacks, 0) ?? 0;
     const chargedMult = Math.max(0, 1 - chargedStacks * 0.20);
-    const effectiveMR = Math.max(0, monster.magicResist * chargedMult * (1 - player.magicPen));
+    const effectiveMR = Math.max(0, monster.magicResist * chargedMult * (1 - markDefReduction) * (1 - player.magicPen));
     const reduction = effectiveMR / (effectiveMR + DEFENSE_CONSTANT);
     finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
   }
@@ -576,6 +579,7 @@ function handleHeavySlashBase(data: SkillUsedData): void {
   for (const monster of hits) {
     applyDamageToMonster(monster.id, baseDamage, 'physical');
     applyEnemyStateLocal(monster.id, 'sundered', SUNDERED_DURATION, 1);
+    if (monster.mark) consumeMark(monster);
   }
 
   emit('resonance:requestCharge', { type: 'ash', amount: 1 });
@@ -597,6 +601,7 @@ function handleHeavySlashRavager(
 
   for (const monster of hits) {
     applyDamageToMonster(monster.id, baseDamage, 'physical');
+    if (monster.mark) consumeMark(monster);
 
     // Apply Bleed stacks (no Sundered — removeSundered flag)
     for (let i = 0; i < bleedStacks; i++) {
@@ -690,6 +695,7 @@ function handleHeavySlashExecutioner(
     }
 
     applyDamageToMonster(monster.id, baseDamage, 'physical', executeMult);
+    if (monster.mark) consumeMark(monster);
 
     // Apply Sundered with extended duration
     if (!monster.isDead) {
@@ -758,6 +764,7 @@ function handleHeavySlashSunbreaker(
 
       // Deal base damage to triggering monster (no defense reduction from cleared sunder)
       applyDamageToMonster(monster.id, baseDamage, 'physical');
+      if (monster.mark) consumeMark(monster);
 
       // AoE detonation
       let radius = detonationRadius;
@@ -799,6 +806,7 @@ function handleHeavySlashSunbreaker(
       applyDamageToMonster(monster.id, baseDamage, 'physical', 1.0, {
         physDefenseMultOverride: defMult,
       });
+      if (monster.mark) consumeMark(monster);
     }
   }
 
@@ -1540,6 +1548,22 @@ let echoState: EchoState = {
 let assassinCritBonusActive = false;
 let assassinCritBonusAmount = 0;
 
+// --- Basic Attack Upgrade State ---
+
+// Overwhelm tracking (basic_attack path C)
+let overwhelmTargetId = '';
+let overwhelmHitCount = 0;
+let overwhelmTimer = 0;
+
+// Quick Draw tracking (ranger_shot path B)
+let rangerShotFireCount = 0;
+let rapidVolleyStacks = 0;
+
+// Cascade tracking (arcane_strike path A — Resonant Strike)
+let cascadeChargesRemaining = 0;
+let cascadeDamageBonus = 0;
+let cascadeGrantsEmber = false;
+
 /** Delayed hit queue — for effects that resolve after a short delay (e.g. Hemorrhage) */
 interface DelayedHit {
   remaining: number;
@@ -1572,6 +1596,54 @@ function onProjectileHit(data: { projectileId: string; targetId: string; x: numb
   const state = getState();
   const proj = state.projectiles.find(p => p.id === data.projectileId);
   if (!proj || proj.ownerId !== 'player') return;
+
+  // Handle ranger_shot projectile hits
+  if (proj.skillId === 'ranger_shot') {
+    const rsFlags = getUpgradeFlags('ranger_shot');
+    let rawDamage = proj.damage;
+
+    // Piercing Shot: damage falloff per pierce, Sundered bonuses
+    if (proj.maxPierceTargets != null && proj.piercingHitCount != null && proj.piercingHitCount > 0) {
+      // Damage already reduced by combat.ts pierce handler; apply Sundered bonus
+      const targetMon = getMonsterById(data.targetId);
+      if (targetMon && !targetMon.isDead && proj.sunderedPierceBonus) {
+        const hasSundered = targetMon.enemyStates?.some(s => s.type === 'sundered' && s.duration > 0) ?? false;
+        if (hasSundered) {
+          rawDamage = Math.floor(rawDamage * (1 + proj.sunderedPierceBonus));
+          // Skewering: extend Sundered duration
+          if (proj.sunderedPierceExtend) {
+            const sunderedState = targetMon.enemyStates?.find(s => s.type === 'sundered');
+            if (sunderedState) {
+              sunderedState.duration += proj.sunderedPierceExtend;
+            }
+          }
+        }
+      }
+      // +1 Ash per extra target beyond first
+      if (typeof rsFlags.pierceAshPerExtra === 'number') {
+        emit('resonance:requestCharge', { type: 'ash', amount: rsFlags.pierceAshPerExtra as number });
+      }
+    }
+
+    applyDamageToMonster(data.targetId, rawDamage, 'physical', 1.0, { source: 'basic' });
+    applyEquipmentStatusProcs(data.targetId, 'physical');
+
+    // Marked Shot: apply mark to target
+    if (typeof rsFlags.markDuration === 'number') {
+      const targetMon = getMonsterById(data.targetId);
+      if (targetMon && !targetMon.isDead) {
+        targetMon.mark = {
+          duration: rsFlags.markDuration as number,
+          damageBonus: (rsFlags.markDamageBonus as number) ?? 0.15,
+          defenseReduction: (rsFlags.markDefenseReduction as number) ?? 0.10,
+          energyRefund: (rsFlags.markEnergyRefund as number) ?? 8,
+          cooldownRefund: typeof rsFlags.markCooldownRefund === 'number' ? rsFlags.markCooldownRefund as number : undefined,
+        };
+      }
+    }
+    return;
+  }
+
   if (proj.skillId !== 'arcane_bolt') return;
 
   const flags = getUpgradeFlags('arcane_bolt');
@@ -1584,6 +1656,12 @@ function onProjectileHit(data: { projectileId: string; targetId: string; x: numb
 
   // --- 2. Deal damage ---
   applyDamageToMonster(data.targetId, rawDamage, 'magic', 1.0, { source: 'skill' });
+
+  // --- 2b. Consume mark (arcane_bolt is a non-basic skill) ---
+  const markTarget = getMonsterById(data.targetId);
+  if (markTarget && !markTarget.isDead && markTarget.mark) {
+    consumeMark(markTarget);
+  }
 
   // --- 3. Apply Charged: 2 stacks if doubleCharged, else 1 ---
   const monster = getMonsterById(data.targetId);
@@ -1840,6 +1918,518 @@ function onProjectileExpiredWithPosition(data: { projectileId: string; x: number
 }
 
 // ==========================================================================
+// Melee Phase State Machine (for basic_attack, arcane_strike, etc.)
+// ==========================================================================
+
+interface ActiveMeleePhase {
+  skillId: string;
+  angle: number;
+  phase: 'windup' | 'swing' | 'followthrough';
+  phaseTimer: number;
+  hitResolved: boolean;
+  phases: NonNullable<import('@/core/types').SkillDefinition['meleePhases']>;
+  damageType: import('@/core/types').DamageType;
+  upgradeFlags?: Record<string, number | boolean | string>;
+}
+
+let activeMeleePhase: ActiveMeleePhase | null = null;
+
+function tickMeleePhase(dt: number): void {
+  if (!activeMeleePhase) return;
+
+  const mp = activeMeleePhase;
+  const player = getPlayer();
+
+  mp.phaseTimer -= dt;
+
+  if (mp.phaseTimer <= 0) {
+    if (mp.phase === 'windup') {
+      // Windup → Swing: resolve hits
+      mp.phase = 'swing';
+      mp.phaseTimer = mp.phases.swingDuration;
+      player.attackPhase = 'swing';
+      player.attackPhaseTimer = mp.phases.swingDuration;
+      player.attackPhaseDuration = mp.phases.swingDuration;
+      const swingDef = getSkillDef(mp.skillId);
+      const swingFlags = mp.upgradeFlags ?? {};
+      emit('combat:attackSwing', {
+        angle: mp.angle,
+        duration: mp.phases.swingDuration,
+        arcWidth: (swingFlags.cleaveArc ?? swingFlags.precisionArc ?? swingFlags.destabilizeArc ?? swingDef?.arcWidth ?? 120) as number,
+        range: (swingFlags.cleaveRange ?? swingFlags.precisionRange ?? swingDef?.range ?? 80) as number,
+      });
+
+      // Resolve hits during swing
+      resolveMeleePhaseHits(mp);
+    } else if (mp.phase === 'swing') {
+      // Swing → Follow-through
+      mp.phase = 'followthrough';
+      mp.phaseTimer = mp.phases.followthroughDuration;
+      player.attackPhase = 'followthrough';
+      player.attackPhaseTimer = mp.phases.followthroughDuration;
+      player.attackPhaseDuration = mp.phases.followthroughDuration;
+      emit('combat:attackFollowThrough', { angle: mp.angle, duration: mp.phases.followthroughDuration });
+    } else if (mp.phase === 'followthrough') {
+      // Complete
+      player.attackPhase = 'none';
+      player.attackPhaseTimer = 0;
+      player.attackPhaseDuration = 0;
+      emit('combat:attackComplete');
+      activeMeleePhase = null;
+    }
+  } else {
+    // Keep player state in sync
+    player.attackPhaseTimer = mp.phaseTimer;
+  }
+}
+
+function resolveMeleePhaseHits(mp: ActiveMeleePhase): void {
+  if (mp.hitResolved) return;
+  mp.hitResolved = true;
+
+  const def = getSkillDef(mp.skillId);
+  if (!def) return;
+
+  const player = getPlayer();
+  const flags = mp.upgradeFlags ?? {};
+
+  // Determine arc/range — upgrades can override
+  const arcWidth = (flags.cleaveArc ?? flags.precisionArc ?? flags.destabilizeArc ?? def.arcWidth ?? 120) as number;
+  const range = (flags.cleaveRange ?? flags.precisionRange ?? def.range ?? 80) as number;
+  let baseDamage = calculateSkillBaseDamage(mp.skillId);
+
+  // Precision damage mult
+  if (typeof flags.precisionDamageMult === 'number') {
+    baseDamage = Math.floor(baseDamage * (flags.precisionDamageMult as number));
+  }
+
+  // Precision crit bonus — temporarily add
+  let precisionCritApplied = false;
+  if (typeof flags.precisionCritBonus === 'number') {
+    player.critChance += flags.precisionCritBonus as number;
+    precisionCritApplied = true;
+  }
+  // Lethal Focus crit damage bonus
+  let lethalCritApplied = false;
+  if (typeof flags.lethalCritDamageBonus === 'number') {
+    player.critDamage += flags.lethalCritDamageBonus as number;
+    lethalCritApplied = true;
+  }
+
+  // Cascade bonus (arcane_strike Resonant Strike)
+  let cascadeMult = 1.0;
+  if (mp.skillId === 'arcane_strike' && cascadeChargesRemaining > 0) {
+    cascadeMult = 1 + cascadeDamageBonus;
+    cascadeChargesRemaining--;
+    // Harmonic Cascade: cascade hits grant +1 Ember
+    if (cascadeGrantsEmber) {
+      emit('resonance:requestCharge', { type: 'ember', amount: 1 });
+    }
+  }
+
+  const hits = findMonstersInArc(player.x, player.y, mp.angle, arcWidth, range);
+
+  // --- Per-hit processing ---
+  let isFirstTarget = true;
+  for (const monster of hits) {
+    let hitDamage = baseDamage;
+    let hitMult = cascadeMult;
+
+    // Cleave: falloff on targets beyond the first
+    if (typeof flags.cleaveFalloff === 'number' && !isFirstTarget) {
+      hitMult *= flags.cleaveFalloff as number;
+    }
+
+    // Overwhelm: consecutive hit stacking on same target
+    if (typeof flags.overwhelmBonusPerHit === 'number') {
+      if (monster.id === overwhelmTargetId) {
+        overwhelmHitCount = Math.min(overwhelmHitCount + 1, (flags.overwhelmMaxHits as number) ?? 5);
+      } else {
+        overwhelmTargetId = monster.id;
+        overwhelmHitCount = 1;
+      }
+      overwhelmTimer = (flags.overwhelmTimeout as number) ?? 2.0;
+      const stackBonus = Math.min(
+        overwhelmHitCount * (flags.overwhelmBonusPerHit as number),
+        (flags.overwhelmMaxBonus as number) ?? 0.40,
+      );
+      hitMult *= 1 + stackBonus;
+
+      // Battering Force T2: Stagger at threshold
+      if (typeof flags.overwhelmStaggerThreshold === 'number' && overwhelmHitCount >= (flags.overwhelmStaggerThreshold as number)) {
+        applyEnemyStateLocal(monster.id, 'staggered', STAGGERED_DURATION, 1);
+      }
+      // Battering Force T2: attack speed buff at max stacks
+      if (typeof flags.overwhelmAtkSpeedThreshold === 'number' && overwhelmHitCount >= (flags.overwhelmAtkSpeedThreshold as number)) {
+        const bonus = (flags.overwhelmAtkSpeedBonus as number) ?? 0.15;
+        const dur = (flags.overwhelmAtkSpeedDuration as number) ?? 3.0;
+        player.attackSpeed *= (1 + bonus);
+        scheduleBuffExpiry('overwhelm_atkspeed', dur, () => {
+          player.attackSpeed /= (1 + bonus);
+        });
+      }
+    }
+
+    // Siphon Strike: energy restore on hit
+    if (typeof flags.siphonEnergy === 'number' && mp.skillId === 'arcane_strike') {
+      let energyGain = flags.siphonEnergy as number;
+      const hasCharged = monster.enemyStates?.some(s => s.type === 'charged' && s.duration > 0) ?? false;
+      if (hasCharged && typeof flags.siphonChargedBonus === 'number') {
+        energyGain += flags.siphonChargedBonus as number;
+      }
+      // Mana Burn T2: bonus magic damage vs Charged
+      if (hasCharged && typeof flags.manaBurnDamageBonus === 'number') {
+        hitMult *= 1 + (flags.manaBurnDamageBonus as number);
+      }
+      player.currentEnergy = Math.min(player.maxEnergy, player.currentEnergy + energyGain);
+      emit('energy:changed', { current: player.currentEnergy, max: player.maxEnergy });
+
+      // Mana Burn T2: 3 Charged stacks → explosion
+      if (hasCharged && flags.manaBurnExplosion) {
+        const chargedStacks = monster.enemyStates
+          ?.filter(s => s.type === 'charged' && s.duration > 0)
+          .reduce((sum, s) => sum + s.stacks, 0) ?? 0;
+        if (chargedStacks >= CHARGED_MAX_STACKS) {
+          // Consume all Charged stacks
+          if (monster.enemyStates) {
+            for (let i = monster.enemyStates.length - 1; i >= 0; i--) {
+              if (monster.enemyStates[i].type === 'charged') {
+                monster.enemyStates.splice(i, 1);
+              }
+            }
+            emit('enemyState:expired', { monsterId: monster.id, type: 'charged' });
+          }
+          // Energy burst
+          const burstEnergy = (flags.manaBurnEnergyBurst as number) ?? 15;
+          player.currentEnergy = Math.min(player.maxEnergy, player.currentEnergy + burstEnergy);
+          emit('energy:changed', { current: player.currentEnergy, max: player.maxEnergy });
+          // Shockwave AoE
+          const explosionRadius = (flags.manaBurnExplosionRadius as number) ?? 40;
+          const explosionMult = (flags.manaBurnExplosionMult as number) ?? 0.30;
+          const explosionDamage = Math.floor(player.magicPower * explosionMult);
+          const aoeHits = findMonstersInCircle(monster.x, monster.y, explosionRadius);
+          for (const target of aoeHits) {
+            if (target.id === monster.id) continue;
+            applyDamageToMonster(target.id, explosionDamage, 'magic', 1.0, { source: 'basic' });
+          }
+        }
+      }
+    }
+
+    // Apply damage
+    applyDamageToMonster(monster.id, hitDamage, mp.damageType, hitMult, { source: 'basic' });
+    applyEquipmentStatusProcs(monster.id, mp.damageType);
+
+    // Cleave: extra Ash per extra target
+    if (typeof flags.cleaveAshPerExtra === 'number' && !isFirstTarget) {
+      emit('resonance:requestCharge', { type: 'ash', amount: flags.cleaveAshPerExtra as number });
+    }
+
+    // Rending Cleave T2: apply Bleed to all targets
+    if (typeof flags.cleaveBleed === 'number') {
+      for (let i = 0; i < (flags.cleaveBleed as number); i++) {
+        emit('status:requestApply', {
+          targetId: monster.id,
+          type: 'bleed',
+          sourceAttack: player.attack,
+          sourcePotency: player.statusPotency,
+        });
+      }
+    }
+
+    // Destabilize: apply Charged per hit
+    if (typeof flags.destabilizeCharged === 'number' && mp.skillId === 'arcane_strike') {
+      if (!monster.isDead) {
+        applyEnemyStateLocal(monster.id, 'charged', CHARGED_DURATION, CHARGED_MAX_STACKS);
+      }
+
+      // Arcane Disruption T2: detonate at 3 Charged stacks
+      if (flags.arcaneDisruption && !monster.isDead) {
+        const chargedStacks = monster.enemyStates
+          ?.filter(s => s.type === 'charged' && s.duration > 0)
+          .reduce((sum, s) => sum + s.stacks, 0) ?? 0;
+        if (chargedStacks >= CHARGED_MAX_STACKS) {
+          // Clear all Charged stacks
+          if (monster.enemyStates) {
+            for (let i = monster.enemyStates.length - 1; i >= 0; i--) {
+              if (monster.enemyStates[i].type === 'charged') {
+                monster.enemyStates.splice(i, 1);
+              }
+            }
+            emit('enemyState:expired', { monsterId: monster.id, type: 'charged' });
+          }
+          // Detonation AoE
+          const disruptRadius = (flags.disruptionRadius as number) ?? 60;
+          const disruptMult = (flags.disruptionDamageMult as number) ?? 0.80;
+          const disruptDamage = Math.floor(baseDamage * disruptMult);
+          const aoeHits = findMonstersInCircle(monster.x, monster.y, disruptRadius);
+          for (const target of aoeHits) {
+            if (target.id === monster.id) continue;
+            applyDamageToMonster(target.id, disruptDamage, 'magic', 1.0, { source: 'basic' });
+            // Apply 1 Charged to all AoE targets
+            if (!target.isDead) {
+              applyEnemyStateLocal(target.id, 'charged', CHARGED_DURATION, CHARGED_MAX_STACKS);
+            }
+          }
+          // +2 Ember on detonation
+          const disruptEmber = (flags.disruptionEmber as number) ?? 2;
+          emit('resonance:requestCharge', { type: 'ember', amount: disruptEmber });
+        }
+      }
+    }
+
+    // Mark consumption: non-basic skills consume marks
+    if (!SKILLS[mp.skillId]?.isBasicAttack && monster.mark) {
+      consumeMark(monster);
+    }
+
+    isFirstTarget = false;
+  }
+
+  // Restore precision crit
+  if (precisionCritApplied) {
+    player.critChance -= flags.precisionCritBonus as number;
+  }
+  if (lethalCritApplied) {
+    player.critDamage -= flags.lethalCritDamageBonus as number;
+  }
+
+  // Rending Cleave T2: 3+ targets → burst Ash instead of per-target
+  if (typeof flags.cleaveAshThreshold === 'number' && hits.length >= (flags.cleaveAshThreshold as number)) {
+    emit('resonance:requestCharge', { type: 'ash', amount: (flags.cleaveAshBurst as number) ?? 2 });
+  }
+
+  // Resonance charge (base)
+  if (hits.length > 0) {
+    const resType = mp.damageType === 'magic' ? 'ember' : 'ash';
+    // Resonant Strike: override Ember amount
+    const resAmount = (mp.skillId === 'arcane_strike' && typeof flags.resonantEmber === 'number')
+      ? (flags.resonantEmber as number)
+      : 1;
+    emit('resonance:requestCharge', { type: resType, amount: resAmount });
+  }
+
+  // Whiff
+  if (hits.length === 0) {
+    const missX = player.x + Math.cos(mp.angle) * range * 0.7;
+    const missY = player.y + Math.sin(mp.angle) * range * 0.7;
+    emit('combat:miss', { targetId: 'none', x: missX, y: missY });
+  }
+}
+
+// ==========================================================================
+// Mark Consumption (Marked Shot — ranger_shot upgrade)
+// ==========================================================================
+
+/**
+ * Consume a mark on a monster: refund energy, optionally reduce cooldowns, clear mark.
+ */
+function consumeMark(monster: MonsterInstance): void {
+  if (!monster.mark) return;
+  const player = getPlayer();
+  player.currentEnergy = Math.min(player.maxEnergy, player.currentEnergy + monster.mark.energyRefund);
+  emit('energy:changed', { current: player.currentEnergy, max: player.maxEnergy });
+  if (monster.mark.cooldownRefund) {
+    emit('skill:reduceCooldowns', { amount: monster.mark.cooldownRefund });
+  }
+  monster.mark = undefined;
+}
+
+// ==========================================================================
+// Equipment Status Procs (shared by all isBasicAttack skills)
+// ==========================================================================
+
+/**
+ * Apply equipment-derived status procs to a monster.
+ * Type-gated: bleed/poison = physical only, burn = magic only, slow/freeze = either.
+ */
+function applyEquipmentStatusProcs(monsterId: string, damageType: import('@/core/types').DamageType): void {
+  const player = getPlayer();
+
+  // Physical-only procs
+  if (damageType === 'physical') {
+    if (player.bleedChance > 0 && Math.random() < player.bleedChance) {
+      emit('status:requestApply', { targetId: monsterId, type: 'bleed', sourceAttack: player.attack, sourcePotency: player.statusPotency });
+    }
+    if (player.poisonChance > 0 && Math.random() < player.poisonChance) {
+      emit('status:requestApply', { targetId: monsterId, type: 'poison', sourceAttack: player.attack, sourcePotency: player.statusPotency });
+    }
+  }
+
+  // Magic-only procs
+  if (damageType === 'magic') {
+    if (player.burnChance > 0 && Math.random() < player.burnChance) {
+      emit('status:requestApply', { targetId: monsterId, type: 'burn', sourceAttack: player.magicPower, sourcePotency: player.statusPotency });
+    }
+  }
+
+  // Either type procs
+  if (player.slowChance > 0 && Math.random() < player.slowChance) {
+    emit('status:requestApply', { targetId: monsterId, type: 'slow', sourceAttack: player.attack, sourcePotency: player.statusPotency });
+  }
+  if (player.freezeChance > 0 && Math.random() < player.freezeChance) {
+    emit('status:requestApply', { targetId: monsterId, type: 'freeze', sourceAttack: player.attack, sourcePotency: player.statusPotency });
+  }
+}
+
+// ==========================================================================
+// Basic Attack Handlers
+// ==========================================================================
+
+/** Shared melee phase start for basic_attack and arcane_strike (with upgrade flags) */
+function startBasicMeleePhase(
+  skillId: string,
+  data: SkillUsedData,
+  damageType: DamageType,
+  flags: Record<string, number | boolean | string>,
+): void {
+  const def = getSkillDef(skillId);
+  if (!def?.meleePhases) return;
+
+  const player = getPlayer();
+
+  activeMeleePhase = {
+    skillId,
+    angle: data.angle,
+    phase: 'windup',
+    phaseTimer: def.meleePhases.windupDuration,
+    hitResolved: false,
+    phases: def.meleePhases,
+    damageType,
+    upgradeFlags: Object.keys(flags).length > 0 ? flags : undefined,
+  };
+
+  player.attackPhase = 'windup';
+  player.attackPhaseTimer = def.meleePhases.windupDuration;
+  player.attackPhaseDuration = def.meleePhases.windupDuration;
+  player.attackAngle = data.angle;
+  player.attackPullback = def.meleePhases.pullbackDistance;
+  player.attackLunge = def.meleePhases.lungeDistance;
+
+  emit('combat:attackWindup', { angle: data.angle, duration: def.meleePhases.windupDuration });
+}
+
+function handleBasicAttack(data: SkillUsedData): void {
+  const flags = getUpgradeFlags('basic_attack');
+  startBasicMeleePhase('basic_attack', data, 'physical', flags);
+}
+
+function handleArcaneStrike(data: SkillUsedData): void {
+  const flags = getUpgradeFlags('arcane_strike');
+  startBasicMeleePhase('arcane_strike', data, 'magic', flags);
+}
+
+function handleRangerShot(data: SkillUsedData): void {
+  const def = getSkillDef('ranger_shot');
+  if (!def) return;
+
+  const flags = getUpgradeFlags('ranger_shot');
+  const baseDamage = calculateSkillBaseDamage('ranger_shot');
+  const speed = def.projectileSpeed ?? 500;
+  const maxDist = def.range ?? 300;
+
+  const cos = Math.cos(data.angle);
+  const sin = Math.sin(data.angle);
+
+  const proj: ProjectileInstance = {
+    id: generateProjectileId(),
+    ownerId: 'player',
+    skillId: 'ranger_shot',
+    x: data.x + cos * PLAYER_BODY_RADIUS,
+    y: data.y + sin * PLAYER_BODY_RADIUS,
+    velocityX: cos * speed,
+    velocityY: sin * speed,
+    speed,
+    damage: baseDamage,
+    damageType: 'physical',
+    piercing: !!flags.piercing,
+    hitTargets: [],
+    maxDistance: maxDist,
+    distanceTraveled: 0,
+    isExpired: false,
+    color: '#88aa44',
+    size: 4,
+  };
+
+  // Piercing Shot: set pierce fields
+  if (flags.piercing) {
+    proj.maxPierceTargets = (flags.maxPierceTargets as number) ?? 3;
+    proj.pierceDamageFalloff = (flags.pierceDamageFalloff as number) ?? 0.25;
+    proj.piercingHitCount = 0;
+    if (typeof flags.sunderedPierceBonus === 'number') {
+      proj.sunderedPierceBonus = flags.sunderedPierceBonus as number;
+    }
+    if (typeof flags.sunderedPierceExtend === 'number') {
+      proj.sunderedPierceExtend = flags.sunderedPierceExtend as number;
+    }
+  }
+
+  // Marked Shot: mark fields handled in onProjectileHit
+
+  getState().projectiles.push(proj);
+  emit('projectile:spawned', { projectile: proj });
+
+  // Resonance: +1 Ash on fire
+  emit('resonance:requestCharge', { type: 'ash', amount: 1 });
+
+  // Quick Draw: twin projectile logic
+  if (typeof flags.twinEveryN === 'number') {
+    rangerShotFireCount++;
+    const twinN = flags.twinEveryN as number;
+    if (rangerShotFireCount % twinN === 0) {
+      const offsetDeg = (flags.twinAngleOffset as number) ?? 15;
+      const offsetRad = offsetDeg * (Math.PI / 180);
+      // Fire twin at angle + offset (pick one side randomly)
+      const twinAngle = data.angle + (Math.random() < 0.5 ? offsetRad : -offsetRad);
+      const twinCos = Math.cos(twinAngle);
+      const twinSin = Math.sin(twinAngle);
+
+      const twinProj: ProjectileInstance = {
+        id: generateProjectileId(),
+        ownerId: 'player',
+        skillId: 'ranger_shot',
+        x: data.x + twinCos * PLAYER_BODY_RADIUS,
+        y: data.y + twinSin * PLAYER_BODY_RADIUS,
+        velocityX: twinCos * speed,
+        velocityY: twinSin * speed,
+        speed,
+        damage: baseDamage,
+        damageType: 'physical',
+        piercing: false,
+        hitTargets: [],
+        maxDistance: maxDist,
+        distanceTraveled: 0,
+        isExpired: false,
+        color: '#88aa44',
+        size: 4,
+        twinProjectile: true,
+      };
+
+      getState().projectiles.push(twinProj);
+      emit('projectile:spawned', { projectile: twinProj });
+
+      // Rapid Volley T2: attack speed buff on twin fire
+      if (typeof flags.rapidVolleyAtkSpeedBonus === 'number') {
+        const bonus = flags.rapidVolleyAtkSpeedBonus as number;
+        const dur = (flags.rapidVolleyDuration as number) ?? 1.5;
+        const maxStacks = (flags.rapidVolleyMaxStacks as number) ?? 2;
+        const player = getPlayer();
+        if (rapidVolleyStacks < maxStacks) {
+          rapidVolleyStacks++;
+          player.attackSpeed *= (1 + bonus);
+          scheduleBuffExpiry(`rapid_volley_${rapidVolleyStacks}`, dur, () => {
+            player.attackSpeed /= (1 + bonus);
+            rapidVolleyStacks = Math.max(0, rapidVolleyStacks - 1);
+          });
+        }
+      }
+    }
+  } else {
+    rangerShotFireCount++;
+  }
+}
+
+// ==========================================================================
 // Effect dispatch table
 // ==========================================================================
 
@@ -1849,6 +2439,9 @@ const effectHandlers: Record<string, EffectHandler> = {
   heavy_slash: handleHeavySlash,
   arcane_bolt: handleArcaneBolt,
   shadow_step: handleShadowStep,
+  basic_attack: handleBasicAttack,
+  ranger_shot: handleRangerShot,
+  arcane_strike: handleArcaneStrike,
 };
 
 // ==========================================================================
@@ -1874,6 +2467,7 @@ export function init(): void {
   dashState.flags = {};
   dashState.throughStaggerHits = [];
   nextProjectileId = 0;
+  activeMeleePhase = null;
 
   // Clear shadow step upgrade state
   activeTrails.length = 0;
@@ -1885,10 +2479,42 @@ export function init(): void {
   assassinCritBonusActive = false;
   assassinCritBonusAmount = 0;
 
+  // Clear basic attack upgrade state
+  overwhelmTargetId = '';
+  overwhelmHitCount = 0;
+  overwhelmTimer = 0;
+  rangerShotFireCount = 0;
+  rapidVolleyStacks = 0;
+  cascadeChargesRemaining = 0;
+  cascadeDamageBonus = 0;
+  cascadeGrantsEmber = false;
+
   on('skill:used', onSkillUsed);
   on('resonance:release', onResonanceRelease);
   on('projectile:hit', onProjectileHit);
   on('projectile:expiredWithPosition', onProjectileExpiredWithPosition);
+
+  // Cascade setup: Overload triggers cascade charges for Resonant Strike
+  on('resonance:release', (data) => {
+    if (data.type !== 'overload') return;
+    const asFlags = getUpgradeFlags('arcane_strike');
+    if (!asFlags.cascadeEnabled) return;
+    cascadeChargesRemaining = (asFlags.cascadeHits as number) ?? 3;
+    cascadeDamageBonus = (asFlags.cascadeDamageBonus as number) ?? 0.30;
+    cascadeGrantsEmber = !!asFlags.cascadeGrantsEmber;
+  });
+
+  // Lethal Focus: kill resets basic_attack cooldown
+  on('monster:died', () => {
+    const baFlags = getUpgradeFlags('basic_attack');
+    if (!baFlags.killResetCooldown) return;
+    const state = getState();
+    const skillState = state.skillStates['basic_attack'];
+    if (skillState && skillState.cooldownRemaining > 0) {
+      skillState.cooldownRemaining = 0;
+      emit('skill:cooldownReady', { skillId: 'basic_attack' });
+    }
+  });
 
   // Stealth break: damage dealt by player → consume crit bonus, apply status effects
   on('combat:damageDealt', (data) => {
@@ -1932,6 +2558,29 @@ export function init(): void {
 }
 
 export function update(dt: number): void {
+  // --- Tick melee phase (basic attack / arcane strike) ---
+  tickMeleePhase(dt);
+
+  // --- Tick overwhelm timer (basic_attack Overwhelm) ---
+  if (overwhelmTimer > 0) {
+    overwhelmTimer -= dt;
+    if (overwhelmTimer <= 0) {
+      overwhelmTargetId = '';
+      overwhelmHitCount = 0;
+      overwhelmTimer = 0;
+    }
+  }
+
+  // --- Tick marks on monsters (Marked Shot) ---
+  const state = getState();
+  for (const monster of state.monsters) {
+    if (monster.isDead || !monster.mark) continue;
+    monster.mark.duration -= dt;
+    if (monster.mark.duration <= 0) {
+      monster.mark = undefined;
+    }
+  }
+
   // --- Tick buff timers ---
   for (let i = activeBuffTimers.length - 1; i >= 0; i--) {
     const timer = activeBuffTimers[i];

@@ -2,7 +2,7 @@
 // Combat System — Damage calculation, spatial hit detection, attack processing
 // ============================================================================
 
-import type { DamageType, DamageResult, EnemyStateInstance, EnemyStateType } from '@/core/types';
+import type { DamageType, EnemyStateType } from '@/core/types';
 import { on, emit } from '@/core/event-bus';
 import {
   getState,
@@ -10,37 +10,22 @@ import {
   getMonsterById,
 } from '@/core/game-state';
 import {
-  BASIC_ATTACK_ARC,
-  BASIC_ATTACK_RANGE,
-  BASIC_ATTACK_DAMAGE,
-  BASIC_ATTACK_COOLDOWN,
   MIN_DAMAGE,
   DEFENSE_CONSTANT,
-  KNOCKBACK_DISTANCE_BASE,
-  KNOCKBACK_CRIT_MULTIPLIER,
-  KNOCKBACK_TWEEN_DURATION,
   INVULNERABILITY_AFTER_HIT,
   DEATH_GOLD_LOSS_PERCENT,
-  ATTACK_WINDUP_DURATION,
-  ATTACK_SWING_DURATION,
-  ATTACK_FOLLOW_THROUGH_DURATION,
   PLAYER_BODY_RADIUS,
   MONSTER_PROJECTILE_PLAYER_KNOCKBACK,
   AFFIX_VAMPIRIC_LEECH,
   AFFIX_FROST_NOVA_RADIUS,
-  AFFIX_FROST_NOVA_SLOW_DURATION,
   AFFIX_FROST_NOVA_DAMAGE_MULT,
-  SUNDERED_DEFENSE_REDUCTION,
-  CHARGED_MR_REDUCTION,
 } from '@/data/constants';
 import { deathMilestoneLevel } from '@/data/balance';
 import { safeResolvePosition } from './expedition-generation';
 
 // --- Internal state ---
 
-let attackCooldownTimer = 0;
 let invulnerabilityTimer = 0;
-let pendingAttackAngle = 0;
 
 // --- Spatial hit detection ---
 
@@ -115,282 +100,6 @@ export function checkHitCircle(
   }
 
   return hitIds;
-}
-
-// --- Attack execution ---
-
-/**
- * Perform a basic melee attack — enters windup phase.
- * Hit detection happens during the swing phase (in update()).
- */
-export function performBasicAttack(angle: number): void {
-  const player = getPlayer();
-
-  // Check cooldown or already attacking
-  if (attackCooldownTimer > 0) return;
-  if (player.attackPhase !== 'none') return;
-
-  // Start cooldown from click time
-  player.isAttacking = true;
-  attackCooldownTimer = BASIC_ATTACK_COOLDOWN / player.attackSpeed;
-
-  // Enter windup phase
-  pendingAttackAngle = angle;
-  player.attackPhase = 'windup';
-  player.attackPhaseTimer = ATTACK_WINDUP_DURATION;
-  player.attackAngle = angle;
-
-  emit('combat:attackWindup', { angle, duration: ATTACK_WINDUP_DURATION });
-}
-
-/**
- * Resolve basic attack hits — called when swing phase begins.
- */
-function resolveBasicAttackHits(angle: number): void {
-  const player = getPlayer();
-  const state = getState();
-
-  // Build target list from alive monsters
-  const aliveMonsters = state.monsters.filter(m => !m.isDead);
-
-  // Check arc hit
-  const hitIds = checkHitArc(
-    player.x,
-    player.y,
-    angle,
-    BASIC_ATTACK_ARC,
-    BASIC_ATTACK_RANGE,
-    aliveMonsters,
-  );
-
-  // Calculate and apply damage to each hit target
-  const baseDmg = Math.floor(player.attack * BASIC_ATTACK_DAMAGE);
-
-  for (const monsterId of hitIds) {
-    const monster = getMonsterById(monsterId);
-    if (!monster || monster.isDead) continue;
-
-    const result = damageMonster(monsterId, baseDmg, player.critChance, player.critDamage, 'physical');
-    if (result && result.damage > 0) {
-      if (player.bleedChance > 0 && Math.random() < player.bleedChance) {
-        emit('status:requestApply', { targetId: monsterId, type: 'bleed', sourceAttack: player.attack, sourcePotency: player.statusPotency });
-      }
-      if (player.poisonChance > 0 && Math.random() < player.poisonChance) {
-        emit('status:requestApply', { targetId: monsterId, type: 'poison', sourceAttack: player.attack, sourcePotency: player.statusPotency });
-      }
-      if (player.slowChance > 0 && Math.random() < player.slowChance) {
-        emit('status:requestApply', { targetId: monsterId, type: 'slow', sourceAttack: player.attack, sourcePotency: player.statusPotency });
-      }
-      if (player.freezeChance > 0 && Math.random() < player.freezeChance) {
-        emit('status:requestApply', { targetId: monsterId, type: 'freeze', sourceAttack: player.attack, sourcePotency: player.statusPotency });
-      }
-    }
-  }
-
-  // If nothing was hit, emit a whiff
-  if (hitIds.length === 0) {
-    const missX = player.x + Math.cos(angle) * BASIC_ATTACK_RANGE * 0.7;
-    const missY = player.y + Math.sin(angle) * BASIC_ATTACK_RANGE * 0.7;
-    emit('combat:miss', { targetId: 'none', x: missX, y: missY });
-  }
-}
-
-/**
- * Apply damage to a monster, handling shield and armor mechanics.
- *
- * @param monsterId  - target monster ID
- * @param rawDamage  - base damage before armor/defense
- * @param critChance - attacker's crit chance
- * @param critDmgMul - attacker's crit damage multiplier
- * @param damageType - physical or magic
- */
-export function damageMonster(
-  monsterId: string,
-  rawDamage: number,
-  critChance: number,
-  critDmgMul: number,
-  damageType: DamageType,
-): DamageResult | null {
-  const monster = getMonsterById(monsterId);
-  if (!monster || monster.isDead) return null;
-
-  const player = getPlayer();
-
-  // --- Staggered: guaranteed crit ---
-  const isStaggered = monster.enemyStates?.some(s => s.type === 'staggered' && s.duration > 0) ?? false;
-  const isCrit = isStaggered || Math.random() < critChance;
-  let baseDmg = isCrit ? Math.floor(rawDamage * critDmgMul) : rawDamage;
-
-  // --- Type-routed defense reduction (with enemy state debuffs) ---
-  let finalDamage: number;
-  if (damageType === 'physical') {
-    // Sundered: -20% defense
-    const hasSundered = monster.enemyStates?.some(s => s.type === 'sundered' && s.duration > 0) ?? false;
-    const sunderedMult = hasSundered ? (1 - SUNDERED_DEFENSE_REDUCTION) : 1;
-    const effectiveDefense = Math.max(0, monster.defense * sunderedMult * (1 - player.armorPen));
-    const reduction = effectiveDefense / (effectiveDefense + DEFENSE_CONSTANT);
-    finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
-  } else {
-    // Charged: -20% magicResist per stack
-    const chargedStacks = monster.enemyStates
-      ?.filter(s => s.type === 'charged' && s.duration > 0)
-      .reduce((sum, s) => sum + s.stacks, 0) ?? 0;
-    const chargedMult = Math.max(0, 1 - chargedStacks * CHARGED_MR_REDUCTION);
-    const effectiveMR = Math.max(0, monster.magicResist * chargedMult * (1 - player.magicPen));
-    const reduction = effectiveMR / (effectiveMR + DEFENSE_CONSTANT);
-    finalDamage = Math.max(MIN_DAMAGE, Math.floor(baseDmg * (1 - reduction)));
-  }
-
-  // --- Shield: full 1:1 absorption ---
-  if (monster.currentShield > 0) {
-    const absorbed = Math.min(monster.currentShield, finalDamage);
-    monster.currentShield -= absorbed;
-    const overflow = finalDamage - absorbed;
-
-    if (monster.currentShield <= 0) {
-      monster.currentShield = 0;
-      emit('monster:shieldBroken', { monsterId });
-    }
-
-    if (overflow <= 0) {
-      // Fully absorbed — emit visual feedback, return 0 HP damage
-      const kbDx = monster.x - player.x;
-      const kbDy = monster.y - player.y;
-      const impactAngle = Math.atan2(kbDy, kbDx);
-      emit('combat:impact', {
-        x: monster.x,
-        y: monster.y,
-        angle: impactAngle,
-        damage: 0,
-        isCrit,
-        damageType,
-        targetId: monsterId,
-      });
-      emit('ui:damageNumber', {
-        x: monster.x,
-        y: monster.y,
-        amount: absorbed,
-        isCrit,
-        damageType,
-      });
-      return { damage: 0, isCrit, damageType, killed: false };
-    }
-
-    finalDamage = overflow;
-  }
-
-  // --- Apply HP damage ---
-  finalDamage = Math.max(MIN_DAMAGE, finalDamage);
-  monster.currentHP = Math.max(0, monster.currentHP - finalDamage);
-
-  // Knockback: push monster away from player
-  const kbDx = monster.x - player.x;
-  const kbDy = monster.y - player.y;
-  const kbDist = Math.sqrt(kbDx * kbDx + kbDy * kbDy);
-  const knockbackDist = KNOCKBACK_DISTANCE_BASE * (isCrit ? KNOCKBACK_CRIT_MULTIPLIER : 1);
-  const fromX = monster.x;
-  const fromY = monster.y;
-  if (kbDist > 0) {
-    const kbTargetX = monster.x + (kbDx / kbDist) * knockbackDist;
-    const kbTargetY = monster.y + (kbDy / kbDist) * knockbackDist;
-    const state = getState();
-    if (state.activeExpedition) {
-      const resolved = safeResolvePosition(
-        state.activeExpedition.map, monster.x, monster.y,
-        kbTargetX, kbTargetY, Math.max(10, monster.size * 0.35),
-      );
-      monster.x = resolved.x;
-      monster.y = resolved.y;
-    } else {
-      monster.x = kbTargetX;
-      monster.y = kbTargetY;
-    }
-  }
-
-  // Track player stats
-  player.totalDamageDealt += finalDamage;
-
-  // Life steal / spell leech
-  if (damageType === 'physical' && player.lifeSteal > 0) {
-    const healed = Math.max(1, Math.floor(finalDamage * player.lifeSteal));
-    player.currentHP = Math.min(player.maxHP, player.currentHP + healed);
-    emit('player:healed', { amount: healed, source: 'life_steal' });
-  }
-
-  // Compute impact angle from player to monster
-  const impactAngle = Math.atan2(kbDy, kbDx);
-
-  // Emit damage dealt event (for UI damage numbers, etc.)
-  emit('combat:damageDealt', {
-    targetId: monsterId,
-    damage: finalDamage,
-    isCrit,
-    damageType,
-    x: fromX,
-    y: fromY,
-  });
-
-  // Emit enriched impact event for VFX
-  emit('combat:impact', {
-    x: fromX,
-    y: fromY,
-    angle: impactAngle,
-    damage: finalDamage,
-    isCrit,
-    damageType,
-    targetId: monsterId,
-  });
-
-  // Emit knockback event for smooth visual tween
-  if (kbDist > 0) {
-    emit('combat:knockback', {
-      targetId: monsterId,
-      fromX,
-      fromY,
-      toX: monster.x,
-      toY: monster.y,
-      duration: KNOCKBACK_TWEEN_DURATION,
-    });
-  }
-
-  emit('monster:damaged', {
-    monsterId,
-    damage: finalDamage,
-    isCrit,
-    remainingHP: monster.currentHP,
-  });
-
-  // Emit UI damage number
-  emit('ui:damageNumber', {
-    x: monster.x,
-    y: monster.y,
-    amount: finalDamage,
-    isCrit,
-    damageType,
-  });
-
-  // Check death
-  const killed = monster.currentHP <= 0;
-  if (killed) {
-    monster.isDead = true;
-    monster.aiState = 'dead';
-
-    emit('monster:died', {
-      monsterId,
-      x: monster.x,
-      y: monster.y,
-      xp: monster.xp,
-      gold: monster.gold,
-      isBoss: monster.isBoss,
-    });
-  }
-
-  return {
-    damage: finalDamage,
-    isCrit,
-    damageType,
-    killed,
-  };
 }
 
 /**
@@ -469,13 +178,6 @@ function handlePlayerDeath(): void {
 }
 
 // --- Event handlers ---
-
-function onPlayerAttack(data: { angle: number; skillId?: string }): void {
-  // Only handle basic attacks here (no skillId)
-  if (!data.skillId) {
-    performBasicAttack(data.angle);
-  }
-}
 
 function onMonsterAttack(data: { monsterId: string; damage: number }): void {
   const monster = getMonsterById(data.monsterId);
@@ -624,6 +326,16 @@ function checkPlayerProjectileHits(): void {
           if (proj.piercingHitCount !== undefined) {
             proj.piercingHitCount++;
           }
+          // Ranger shot pierce: enforce max pierce targets + apply damage falloff
+          if (proj.maxPierceTargets != null && proj.hitTargets.length >= proj.maxPierceTargets) {
+            proj.isExpired = true;
+            emit('projectile:expired', { projectileId: proj.id });
+            break;
+          }
+          // Apply pierce damage falloff to projectile for next hit
+          if (proj.pierceDamageFalloff != null) {
+            proj.damage = Math.floor(proj.damage * (1 - proj.pierceDamageFalloff));
+          }
           // Continue checking other monsters
         } else {
           proj.isExpired = true;
@@ -695,58 +407,14 @@ function tickEnemyStates(dt: number): void {
 // --- Lifecycle ---
 
 export function init(): void {
-  attackCooldownTimer = 0;
   invulnerabilityTimer = 0;
-  pendingAttackAngle = 0;
 
-  on('combat:playerAttack', onPlayerAttack);
   on('combat:monsterAttack', onMonsterAttack);
   on('monster:died', onMonsterDiedCombat);
 }
 
 export function update(dt: number): void {
   const player = getPlayer();
-
-  // --- Attack phase pipeline ---
-  if (player.attackPhase !== 'none') {
-    player.attackPhaseTimer -= dt;
-
-    if (player.attackPhaseTimer <= 0) {
-      // Phase transition
-      if (player.attackPhase === 'windup') {
-        // Windup → Swing: resolve hits
-        player.attackPhase = 'swing';
-        player.attackPhaseTimer = ATTACK_SWING_DURATION;
-        emit('combat:attackSwing', { angle: pendingAttackAngle, duration: ATTACK_SWING_DURATION });
-        resolveBasicAttackHits(pendingAttackAngle);
-      } else if (player.attackPhase === 'swing') {
-        // Swing → Follow-through
-        player.attackPhase = 'followthrough';
-        player.attackPhaseTimer = ATTACK_FOLLOW_THROUGH_DURATION;
-        emit('combat:attackFollowThrough', { angle: pendingAttackAngle, duration: ATTACK_FOLLOW_THROUGH_DURATION });
-      } else if (player.attackPhase === 'followthrough') {
-        // Follow-through → Complete
-        player.attackPhase = 'none';
-        player.attackPhaseTimer = 0;
-        emit('combat:attackComplete');
-      }
-    }
-  }
-
-  // --- Tick attack cooldown ---
-  if (attackCooldownTimer > 0) {
-    attackCooldownTimer -= dt;
-    if (attackCooldownTimer <= 0) {
-      attackCooldownTimer = 0;
-      player.isAttacking = false;
-    }
-  }
-
-  // --- Sync cooldown to basic_attack skill state for UI display ---
-  const state = getState();
-  if (state.skillStates['basic_attack']) {
-    state.skillStates['basic_attack'].cooldownRemaining = attackCooldownTimer;
-  }
 
   // --- Tick invulnerability ---
   if (invulnerabilityTimer > 0) {

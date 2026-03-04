@@ -49,6 +49,10 @@ export class UIScene extends Phaser.Scene {
   private keyC!: Phaser.Input.Keyboard.Key;
 
   private leaveConfirmVisible = false;
+  private trashConfirmVisible = false;
+  private trashPendingItem: ItemInstance | null = null;
+  private trashConfirmBg!: Phaser.GameObjects.Rectangle;
+  private trashConfirmText!: Phaser.GameObjects.Text;
   private resultToastTimer = 0;
 
   // Merchant auto-open tracking
@@ -154,6 +158,21 @@ export class UIScene extends Phaser.Scene {
       align: 'center',
     }).setOrigin(0.5).setScrollFactor(0).setDepth(300).setVisible(false);
 
+    // Trash confirm modal (hidden until a drag-to-empty-space drop)
+    this.trashConfirmBg = this.add
+      .rectangle(this.scale.width / 2, this.scale.height / 2, 280, 76, 0x1a1a1a, 0.94)
+      .setScrollFactor(0).setDepth(300).setStrokeStyle(1, 0x444444).setVisible(false);
+    this.trashConfirmText = this.add
+      .text(this.scale.width / 2, this.scale.height / 2, '', {
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        color: UI_THEME.text,
+        align: 'center',
+        stroke: '#000000',
+        strokeThickness: 1,
+      })
+      .setScrollFactor(0).setDepth(301).setOrigin(0.5).setVisible(false);
+
     this.resultToastText = this.add.text(this.scale.width / 2, 52, '', {
       fontFamily: 'monospace',
       fontSize: '14px',
@@ -190,6 +209,10 @@ export class UIScene extends Phaser.Scene {
     this.input.on('pointerdown', this.onHubUiPointerDown, this);
 
     this.keyEsc.on('down', () => {
+      if (this.trashConfirmVisible) {
+        this.cancelTrashConfirm();
+        return;
+      }
       const state = getState();
       if (state.codexOpen) {
         this.skillCodex.toggle();
@@ -211,6 +234,10 @@ export class UIScene extends Phaser.Scene {
     });
 
     this.keyY.on('down', () => {
+      if (this.trashConfirmVisible) {
+        this.confirmTrashItem();
+        return;
+      }
       if (!this.leaveConfirmVisible) return;
       this.leaveConfirmVisible = false;
       this.syncLeaveConfirm();
@@ -218,6 +245,10 @@ export class UIScene extends Phaser.Scene {
     });
 
     this.keyN.on('down', () => {
+      if (this.trashConfirmVisible) {
+        this.cancelTrashConfirm();
+        return;
+      }
       if (!this.leaveConfirmVisible) return;
       this.leaveConfirmVisible = false;
       this.syncLeaveConfirm();
@@ -462,6 +493,41 @@ export class UIScene extends Phaser.Scene {
       .setText('Leave Expedition?\nY: Confirm  |  N or ESC: Cancel');
   }
 
+  private showTrashConfirm(item: ItemInstance): void {
+    this.trashPendingItem = item;
+    this.trashConfirmVisible = true;
+    this.syncTrashConfirm();
+  }
+
+  private confirmTrashItem(): void {
+    if (!this.trashPendingItem) return;
+    removeFromInventory(this.trashPendingItem.id);
+    this.inventoryPanel.refresh();
+    this.trashPendingItem = null;
+    this.trashConfirmVisible = false;
+    this.syncTrashConfirm();
+  }
+
+  private cancelTrashConfirm(): void {
+    this.trashPendingItem = null;
+    this.trashConfirmVisible = false;
+    this.syncTrashConfirm();
+  }
+
+  private syncTrashConfirm(): void {
+    if (!this.trashConfirmVisible || !this.trashPendingItem) {
+      this.trashConfirmBg.setVisible(false);
+      this.trashConfirmText.setVisible(false);
+      return;
+    }
+    const rarityColor = RARITY_COLORS[this.trashPendingItem.rarity] ?? '#e5e5e5';
+    this.trashConfirmBg.setVisible(true);
+    this.trashConfirmText
+      .setVisible(true)
+      .setColor(rarityColor)
+      .setText(`Trash "${this.trashPendingItem.name}"?\nY — Destroy   |   N / ESC — Keep`);
+  }
+
   // --- Drag-to-sell helpers ---
 
   private createDragGhost(item: ItemInstance): void {
@@ -545,8 +611,11 @@ export class UIScene extends Phaser.Scene {
         } else if (invSlot !== null && invSlot !== this.dragSourceIndex) {
           moveInventoryItemToSlot(this.dragSourceIndex, invSlot);
           emit('player:statsChanged');
+        } else {
+          // Dropped on empty space — offer trash confirmation.
+          // showTrashConfirm() saves dragItem to trashPendingItem before cleanup clears this.dragItem.
+          this.showTrashConfirm(this.dragItem);
         }
-        // else: cancel — item stays in inventory
 
       } else if (this.dragSource === 'staging') {
         // item already removed from staging
@@ -669,6 +738,8 @@ export class UIScene extends Phaser.Scene {
 
   private onResize = (size: Phaser.Structs.Size): void => {
     this.leaveConfirmText.setPosition(size.width / 2, size.height / 2);
+    this.trashConfirmBg.setPosition(size.width / 2, size.height / 2);
+    this.trashConfirmText.setPosition(size.width / 2, size.height / 2);
     this.resultToastText.setPosition(size.width / 2, 52);
     this.drawHudInfoCard();
   };

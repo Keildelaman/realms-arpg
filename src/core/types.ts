@@ -210,6 +210,18 @@ export interface SkillDefinition {
   unlockLevel: number;
   unlockCost: number; // SP cost
 
+  // Basic attack flag (affected by attackSpeed, equipment status procs)
+  isBasicAttack?: boolean;
+
+  // Melee phase animation data (data-driven windup/swing/followthrough)
+  meleePhases?: {
+    windupDuration: number;
+    swingDuration: number;
+    followthroughDuration: number;
+    pullbackDistance: number;
+    lungeDistance: number;
+  };
+
   // Visual
   color: string;
 
@@ -734,14 +746,14 @@ export interface PlayerState {
   attackPhase: AttackPhase;
   attackPhaseTimer: number;
   attackAngle: number;
+  attackPullback: number;       // pullback distance for current melee phase
+  attackLunge: number;          // lunge distance for current melee phase
+  attackPhaseDuration: number;  // duration of the current attack phase
 
   // Combat state
-  isAttacking: boolean;
   isDashing: boolean;
   isStealth: boolean;        // Death's Shadow: enemies deaggro, next hit empowered
   isInvulnerable: boolean;
-  lastAttackTime: number;
-  basicAttackCooldown: number;
 
   // Ascension
   ascensionLevel: number;
@@ -860,6 +872,15 @@ export interface MonsterInstance {
 
   // Enemy states (sundered, charged, staggered)
   enemyStates: EnemyStateInstance[];
+
+  // Marked Shot debuff (ranger_shot upgrade)
+  mark?: {
+    duration: number;       // seconds remaining
+    damageBonus: number;    // e.g. 0.15 = +15% from non-basic skills
+    defenseReduction: number; // e.g. 0.10 = -10% effective defense
+    energyRefund: number;   // e.g. 8
+    cooldownRefund?: number; // Hunter's Quarry: 0.5s CDR on consume
+  };
 }
 
 export interface ProjectileInstance {
@@ -900,6 +921,13 @@ export interface ProjectileInstance {
   piercingHitCount?: number;       // Unstable Bolt: tracks how many targets pierced
   piercingDamageScale?: number;    // Chain Reaction: accumulated multiplicative damage bonus
   hitSunderedTarget?: boolean;     // Chain Reaction: any pierced target had Sundered?
+
+  // Ranger Shot pierce fields (Piercing Shot upgrade)
+  maxPierceTargets?: number;       // e.g. 3 or 5
+  pierceDamageFalloff?: number;    // e.g. 0.25 = -25% per pierce
+  sunderedPierceBonus?: number;    // Skewering: +30% to Sundered targets
+  sunderedPierceExtend?: number;   // Skewering: extend Sundered by 2s
+  twinProjectile?: boolean;        // Quick Draw: flag to prevent recursive twin
 }
 
 export interface ItemInstance {
@@ -992,7 +1020,6 @@ export type GameEventMap = {
   'player:targetChanged': { monsterId: string | null };
 
   // Combat events
-  'combat:playerAttack': { angle: number; skillId?: string };
   'combat:damageDealt': {
     targetId: string;
     damage: number;
@@ -1005,7 +1032,7 @@ export type GameEventMap = {
   'combat:monsterAttack': { monsterId: string; damage: number };
   'combat:miss': { targetId: string; x: number; y: number };
   'combat:attackWindup': { angle: number; duration: number };
-  'combat:attackSwing': { angle: number; duration: number };
+  'combat:attackSwing': { angle: number; duration: number; arcWidth: number; range: number };
   'combat:attackFollowThrough': { angle: number; duration: number };
   'combat:attackComplete': undefined;
   'combat:attackReady': undefined;
@@ -1144,6 +1171,7 @@ export type GameEventMap = {
     isCrit: boolean;
     damageType: DamageType;
     isHeal?: boolean;
+    colorOverride?: string;
   };
 
   // Monster ability events

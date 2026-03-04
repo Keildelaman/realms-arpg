@@ -19,6 +19,7 @@ import {
   LOOT_DESPAWN_TIME,
   LOOT_DROP_SPREAD,
   BOSS_SECOND_DROP_CHANCE,
+  LOOT_PICKUP_IMMUNITY_TIME,
 } from '@/data/constants';
 import { getRarityScaling } from '@/systems/monster-rarity';
 
@@ -315,6 +316,13 @@ export function update(dt: number): void {
       activeLootDrops.splice(i, 1);
       continue;
     }
+
+    // Items cannot be picked up immediately — lets arc animation play out.
+    // Gold has no immunity (instant pickup feels good).
+    if (ageSeconds < LOOT_PICKUP_IMMUNITY_TIME) continue;
+
+    // When inventory is full, leave loot on the ground — no magnetism.
+    if (isInventoryFull()) continue;
 
     // Check player proximity for auto-pickup (loot magnet)
     const dx = player.x - drop.x;

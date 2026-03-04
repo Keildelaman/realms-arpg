@@ -320,6 +320,8 @@ export class GameScene extends Phaser.Scene {
 
     // --- Auto-unlock and equip starter skills ---
     skills.unlockSkill('basic_attack');
+    skills.unlockSkill('ranger_shot');
+    skills.unlockSkill('arcane_strike');
     skills.equipSkill('basic_attack', 0);    // LMB
     skills.unlockSkill('heavy_slash');
     skills.equipSkill('heavy_slash', 1);     // RMB
@@ -350,9 +352,12 @@ export class GameScene extends Phaser.Scene {
     // --- First-use celebration ---
     on('skill:used', (data) => {
       const player = getPlayer();
-      if (data.skillId === 'basic_attack') return;
+      if (SKILLS[data.skillId]?.isBasicAttack) return;
       if (player.firstUseShown[data.skillId]) return;
       player.firstUseShown[data.skillId] = true;
+
+      // Gold damage number for the first hit from this skill
+      this.damageNumbers.nextColorOverride = '#fbbf24';
 
       // Time slow: 30% speed for 0.3s
       this.time.timeScale = 0.3;
@@ -522,11 +527,7 @@ export class GameScene extends Phaser.Scene {
     const skillId = player.activeSkills[slotIndex];
     if (!skillId) return;
     const angle = movement.getPlayerFacingAngle();
-    if (skillId === 'basic_attack') {
-      emit('combat:playerAttack', { angle });
-    } else {
-      skills.activateSkill(skillId, angle);
-    }
+    skills.activateSkill(skillId, angle);
   }
 
   private relayInput(): void {

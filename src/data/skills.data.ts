@@ -11,26 +11,219 @@ import type { SkillDefinition, SkillUpgradeTree } from '@/core/types';
 export const SKILLS: Record<string, SkillDefinition> = {
 
   // ==========================================================================
-  // BASIC ATTACK (always equipped, slot 0)
+  // BASIC ATTACK SKILLS
   // ==========================================================================
 
   basic_attack: {
     id: 'basic_attack',
     name: 'Attack',
-    description: 'A basic melee swing.',
+    description: 'A basic melee swing. Applies equipment status effects.',
     category: 'power',
     type: 'active',
     mechanic: 'melee',
     targeting: 'directional',
     damageType: 'physical',
+    isBasicAttack: true,
+    meleePhases: {
+      windupDuration: 0.065,
+      swingDuration: 0.08,
+      followthroughDuration: 0.12,
+      pullbackDistance: 4,
+      lungeDistance: 10,
+    },
     levels: [
-      { damage: 1.0, cooldown: 0.45, energyCost: 0 },
+      { damage: 1.00, cooldown: 0.45, energyCost: 0 },
+      { damage: 1.05, cooldown: 0.43, energyCost: 0 },
+      { damage: 1.10, cooldown: 0.41, energyCost: 0 },
+      { damage: 1.15, cooldown: 0.39, energyCost: 0 },
+      { damage: 1.20, cooldown: 0.38, energyCost: 0 },
     ],
     unlockLevel: 1,
     unlockCost: 0,
     color: '#4488ff',
     range: 80,
     arcWidth: 120,
+    upgradeTree: {
+      tier1: {
+        A: {
+          id: 'basic_attack_cleave', name: 'Cleave', path: 'A', tier: 1, spCost: 1,
+          description: '"Why swing at one when you can swing at all?"',
+          detailedDescription: 'Arc 180° (from 120°), range 100px (from 80px). Targets beyond 1st take 60% damage. +1 Ash per extra target hit.',
+          flags: { cleaveArc: 180, cleaveRange: 100, cleaveFalloff: 0.60, cleaveAshPerExtra: 1 },
+        },
+        B: {
+          id: 'basic_attack_precision', name: 'Precision', path: 'B', tier: 1, spCost: 1,
+          description: '"Less swing, more sting."',
+          detailedDescription: 'Arc 60° (from 120°), range 95px (from 80px). +1.25× damage. +10% crit chance during swing.',
+          flags: { precisionArc: 60, precisionRange: 95, precisionDamageMult: 1.25, precisionCritBonus: 0.10 },
+        },
+        C: {
+          id: 'basic_attack_overwhelm', name: 'Overwhelm', path: 'C', tier: 1, spCost: 1,
+          description: '"Hit them until they stop standing."',
+          detailedDescription: 'Consecutive hits on same target: +8% damage/hit (max +40%, 5 hits). Resets after 2s or target switch.',
+          flags: { overwhelmBonusPerHit: 0.08, overwhelmMaxBonus: 0.40, overwhelmMaxHits: 5, overwhelmTimeout: 2.0 },
+        },
+      },
+      tier2: {
+        A: {
+          id: 'basic_attack_rending_cleave', name: 'Rending Cleave', path: 'A', tier: 2, spCost: 2,
+          description: '"Every edge finds flesh."',
+          detailedDescription: 'Applies 1 Bleed stack to all targets. On 3+ targets hit, +2 Ash instead of +1/target.',
+          flags: { cleaveBleed: 1, cleaveAshBurst: 2, cleaveAshThreshold: 3 },
+        },
+        B: {
+          id: 'basic_attack_lethal_focus', name: 'Lethal Focus', path: 'B', tier: 2, spCost: 2,
+          description: '"One strike is all it takes."',
+          detailedDescription: 'Crits deal +40% damage (additive with critMultiplier). Kills reset basic_attack cooldown.',
+          flags: { lethalCritDamageBonus: 0.40, killResetCooldown: true },
+        },
+        C: {
+          id: 'basic_attack_battering_force', name: 'Battering Force', path: 'C', tier: 2, spCost: 2,
+          description: '"They never recover."',
+          detailedDescription: 'At 3+ stacks, hits apply Staggered (0.4s). At max stacks (5), +15% attack speed buff for 3s.',
+          flags: { overwhelmStaggerThreshold: 3, overwhelmAtkSpeedBonus: 0.15, overwhelmAtkSpeedDuration: 3.0, overwhelmAtkSpeedThreshold: 5 },
+        },
+      },
+    },
+  },
+
+  ranger_shot: {
+    id: 'ranger_shot',
+    name: 'Ranger Shot',
+    description: 'A fast short-range projectile. Applies equipment status effects.',
+    category: 'power',
+    type: 'active',
+    mechanic: 'projectile',
+    targeting: 'directional',
+    damageType: 'physical',
+    isBasicAttack: true,
+    levels: [
+      { damage: 1.00, cooldown: 0.45, energyCost: 0 },
+      { damage: 1.05, cooldown: 0.43, energyCost: 0 },
+      { damage: 1.10, cooldown: 0.41, energyCost: 0 },
+      { damage: 1.15, cooldown: 0.39, energyCost: 0 },
+      { damage: 1.20, cooldown: 0.38, energyCost: 0 },
+    ],
+    unlockLevel: 1,
+    unlockCost: 0,
+    color: '#88aa44',
+    range: 300,
+    projectileSpeed: 500,
+    upgradeTree: {
+      tier1: {
+        A: {
+          id: 'ranger_shot_piercing', name: 'Piercing Shot', path: 'A', tier: 1, spCost: 1,
+          description: '"One shot, three kills."',
+          detailedDescription: 'Projectile pierces through targets (max 3). Each pierce: -25% damage. +1 Ash per pierce target beyond first.',
+          flags: { piercing: true, maxPierceTargets: 3, pierceDamageFalloff: 0.25, pierceAshPerExtra: 1 },
+        },
+        B: {
+          id: 'ranger_shot_quick_draw', name: 'Quick Draw', path: 'B', tier: 1, spCost: 1,
+          description: '"Faster than the eye."',
+          detailedDescription: '-15% cooldown (multiplicative with attack speed). Every 3rd shot fires a twin projectile (offset ±15°).',
+          flags: { cooldownMult: 0.85, twinEveryN: 3, twinAngleOffset: 15 },
+        },
+        C: {
+          id: 'ranger_shot_marked', name: 'Marked Shot', path: 'C', tier: 1, spCost: 1,
+          description: '"You can\'t hide from what\'s already watching."',
+          detailedDescription: 'Hits apply Mark (4s): marked targets take +15% damage from non-basic skills, -10% defense. Mark consumed on next skill hit for +8 energy refund.',
+          flags: { markDuration: 4, markDamageBonus: 0.15, markDefenseReduction: 0.10, markEnergyRefund: 8 },
+        },
+      },
+      tier2: {
+        A: {
+          id: 'ranger_shot_skewering', name: 'Skewering Bolt', path: 'A', tier: 2, spCost: 2,
+          description: '"Pin them all to the wall."',
+          detailedDescription: 'Pierce limit → 5. Targets hit while Sundered take +30% damage. Piercing a Sundered target extends Sundered by 2s.',
+          flags: { maxPierceTargets: 5, sunderedPierceBonus: 0.30, sunderedPierceExtend: 2.0 },
+        },
+        B: {
+          id: 'ranger_shot_rapid_volley', name: 'Rapid Volley', path: 'B', tier: 2, spCost: 2,
+          description: '"The sky darkens with arrows."',
+          detailedDescription: 'Twin fires every 2nd shot. After twin fire, +20% attack speed for 1.5s (stacks to 2×).',
+          flags: { twinEveryN: 2, rapidVolleyAtkSpeedBonus: 0.20, rapidVolleyDuration: 1.5, rapidVolleyMaxStacks: 2 },
+        },
+        C: {
+          id: 'ranger_shot_hunters_quarry', name: "Hunter's Quarry", path: 'C', tier: 2, spCost: 2,
+          description: '"The mark deepens. The hunt concludes."',
+          detailedDescription: 'Mark duration → 6s. Mark damage bonus → +25%. On mark consume, reduce all skill cooldowns by 0.5s.',
+          flags: { markDuration: 6, markDamageBonus: 0.25, markCooldownRefund: 0.5 },
+        },
+      },
+    },
+  },
+
+  arcane_strike: {
+    id: 'arcane_strike',
+    name: 'Arcane Strike',
+    description: 'A swift magic melee arc. Applies equipment status effects.',
+    category: 'mage',
+    type: 'active',
+    mechanic: 'melee',
+    targeting: 'directional',
+    damageType: 'magic',
+    isBasicAttack: true,
+    meleePhases: {
+      windupDuration: 0.05,
+      swingDuration: 0.06,
+      followthroughDuration: 0.08,
+      pullbackDistance: 3,
+      lungeDistance: 6,
+    },
+    levels: [
+      { damage: 1.00, cooldown: 0.45, energyCost: 0 },
+      { damage: 1.05, cooldown: 0.43, energyCost: 0 },
+      { damage: 1.10, cooldown: 0.41, energyCost: 0 },
+      { damage: 1.15, cooldown: 0.39, energyCost: 0 },
+      { damage: 1.20, cooldown: 0.38, energyCost: 0 },
+    ],
+    unlockLevel: 1,
+    unlockCost: 0,
+    color: '#9966ff',
+    range: 60,
+    arcWidth: 100,
+    upgradeTree: {
+      tier1: {
+        A: {
+          id: 'arcane_strike_resonant', name: 'Resonant Strike', path: 'A', tier: 1, spCost: 1,
+          description: '"Each strike echoes with arcane power."',
+          detailedDescription: '+2 Ember per hit (from 1). When Overload triggers, next 3 arcane_strike hits deal +30% damage ("Cascade").',
+          flags: { resonantEmber: 2, cascadeEnabled: true, cascadeHits: 3, cascadeDamageBonus: 0.30 },
+        },
+        B: {
+          id: 'arcane_strike_siphon', name: 'Siphon Strike', path: 'B', tier: 1, spCost: 1,
+          description: '"Draw power from every blow."',
+          detailedDescription: 'Each hit restores 4 energy. Hits on Charged enemies restore +3 bonus energy (7 total).',
+          flags: { siphonEnergy: 4, siphonChargedBonus: 3 },
+        },
+        C: {
+          id: 'arcane_strike_destabilize', name: 'Destabilize', path: 'C', tier: 1, spCost: 1,
+          description: '"Shatter their magical defenses."',
+          detailedDescription: 'Hits apply 1 Charged stack (normally magic-skill-only). Arc 120° (from 100°).',
+          flags: { destabilizeCharged: 1, destabilizeArc: 120 },
+        },
+      },
+      tier2: {
+        A: {
+          id: 'arcane_strike_harmonic_cascade', name: 'Harmonic Cascade', path: 'A', tier: 2, spCost: 2,
+          description: '"The resonance feeds itself."',
+          detailedDescription: 'Cascade hits → 5. Cascade bonus → +50%. Cascade hits grant +1 Ember (can re-trigger Overload).',
+          flags: { cascadeHits: 5, cascadeDamageBonus: 0.50, cascadeGrantsEmber: true },
+        },
+        B: {
+          id: 'arcane_strike_mana_burn', name: 'Mana Burn', path: 'B', tier: 2, spCost: 2,
+          description: '"Drain them dry, then watch them burst."',
+          detailedDescription: 'Hits on Charged enemies deal +20% bonus magic damage. Consuming all 3 Charged stacks with a hit triggers an energy burst: +15 energy, emit shockwave (40px, 0.3× damage).',
+          flags: { manaBurnDamageBonus: 0.20, manaBurnExplosion: true, manaBurnExplosionRadius: 40, manaBurnExplosionMult: 0.30, manaBurnEnergyBurst: 15 },
+        },
+        C: {
+          id: 'arcane_strike_disruption', name: 'Arcane Disruption', path: 'C', tier: 2, spCost: 2,
+          description: '"Unstable energy seeks release."',
+          detailedDescription: 'At 3 Charged stacks, next arcane_strike hit detonates all stacks: 60px AoE, 0.8× damage to nearby, applies 1 Charged to all AoE targets. +2 Ember on detonation.',
+          flags: { arcaneDisruption: true, disruptionRadius: 60, disruptionDamageMult: 0.80, disruptionEmber: 2 },
+        },
+      },
+    },
   },
 
   // ==========================================================================

@@ -24,7 +24,6 @@ export const BASE_CRIT_CHANCE = 0.05;
 export const BASE_CRIT_DAMAGE = 2.0;
 export const BASE_MOVE_SPEED = 180;     // pixels/sec
 export const BASE_ATTACK_SPEED = 1.0;   // attacks/sec
-export const BASIC_ATTACK_COOLDOWN = 0.45; // seconds
 
 // --- Player Movement ---
 export const DASH_SPEED = 500;
@@ -32,11 +31,6 @@ export const DASH_DURATION = 0.15;
 export const DASH_COOLDOWN = 1.0;
 export const DASH_IFRAME_DURATION = 0.15;
 export const PLAYER_SIZE = 32;
-
-// --- Basic Attack ---
-export const BASIC_ATTACK_ARC = 120;       // degrees
-export const BASIC_ATTACK_RANGE = 80;      // pixels from center
-export const BASIC_ATTACK_DAMAGE = 1.0;    // multiplier of attack stat
 
 // --- Energy ---
 export const MAX_ENERGY = 100;
@@ -128,6 +122,7 @@ export const SELL_PRICE_RATIO = 0.3;
 export const LOOT_MAGNET_RANGE = 80;     // pixels — auto-pickup radius
 export const LOOT_DESPAWN_TIME = 30;      // seconds before loot disappears
 export const LOOT_DROP_SPREAD = 40;       // pixels — random spread on drop
+export const LOOT_PICKUP_IMMUNITY_TIME = 0.35; // seconds items are immune to pickup after spawning
 export const BOSS_GUARANTEED_RARE = true;
 export const BOSS_SECOND_DROP_CHANCE = 0.4;
 
@@ -361,11 +356,6 @@ export const MOVE_SQUASH_ON_STOP = 0.06;
 export const MOVE_SQUASH_DURATION = 0.1;  // seconds
 
 // --- Attack Animation ---
-export const ATTACK_WINDUP_DURATION = 0.065;       // seconds
-export const ATTACK_SWING_DURATION = 0.08;          // seconds
-export const ATTACK_FOLLOW_THROUGH_DURATION = 0.12; // seconds
-export const ATTACK_PULLBACK_DISTANCE = 4;          // pixels
-export const ATTACK_LUNGE_DISTANCE = 10;            // pixels
 export const ATTACK_ARC_FILL_ALPHA = 0.35;
 export const ATTACK_ARC_THICKNESS = 8;
 export const ATTACK_ARC_INNER_RATIO = 0.45;

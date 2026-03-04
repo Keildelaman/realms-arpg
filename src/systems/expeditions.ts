@@ -1009,7 +1009,6 @@ function finishRun(outcome: 'completed' | 'failed' | 'abandoned'): void {
   player.currentEnergy = player.maxEnergy;
   player.isInvulnerable = false;
   player.isDashing = false;
-  player.isAttacking = false;
   player.attackPhase = 'none';
   player.attackPhaseTimer = 0;
   player.velocityX = 0;
@@ -1094,7 +1093,6 @@ function respawnPlayerAtCheckpoint(): void {
   }
 
   player.isDashing = false;
-  player.isAttacking = false;
   player.attackPhase = 'none';
   player.attackPhaseTimer = 0;
   player.velocityX = 0;

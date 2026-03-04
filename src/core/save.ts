@@ -7,7 +7,7 @@ import { getState, getPlayer, setExpeditionMeta, createDefaultStash } from './ga
 import { recalculateStats } from '@/systems/player';
 import { getShopRefreshCount, restoreShopRefreshCount } from '@/systems/economy';
 import { on } from './event-bus';
-import { BASIC_ATTACK_COOLDOWN, INVENTORY_SIZE, STASH_TAB_SIZE } from '@/data/constants';
+import { INVENTORY_SIZE, STASH_TAB_SIZE } from '@/data/constants';
 
 // --- Constants ---
 
@@ -236,14 +236,14 @@ export function applySave(data: SaveData): void {
   player.velocityX = 0;
   player.velocityY = 0;
   player.facingAngle = 0;
-  player.isAttacking = false;
   player.isDashing = false;
   player.isInvulnerable = false;
   player.attackPhase = 'none';
   player.attackPhaseTimer = 0;
   player.attackAngle = 0;
-  player.lastAttackTime = 0;
-  player.basicAttackCooldown = BASIC_ATTACK_COOLDOWN;
+  player.attackPullback = 0;
+  player.attackLunge = 0;
+  player.attackPhaseDuration = 0;
   player.targetMonsterId = null;
 
   // 3. Recalculate derived stats from base stats + equipment
@@ -368,4 +368,9 @@ export function init(): void {
   on('item:sold', saveGame);
   on('economy:purchase', saveGame);
   on('stash:changed', saveGame);
+  on('skill:unlocked', saveGame);
+  on('skill:upgraded', saveGame);
+  on('skill:levelUp', saveGame);
+  on('skill:equipped', saveGame);
+  on('skill:respecced', saveGame);
 }
